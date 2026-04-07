@@ -3,6 +3,7 @@ import { Response } from 'express'
 import { runQuery } from '../db/client'
 import { getAuthUserFromRequest } from '../auth/session'
 import { v2 as cloudinary } from 'cloudinary'
+import crypto from 'crypto'
 
 type Client = {
   userId: string
@@ -87,10 +88,6 @@ router.post('/messages', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 
-  // DB in this environment doesn't include the community_messages table yet.
-  // Return a clear error instead of crashing the server.
-  const hasCommunityTable = true
-
   const body = String(req.body?.body || '').trim()
   const imageBase64 = String(req.body?.imageBase64 || '').trim()
   const mimeType = String(req.body?.mimeType || 'image/jpeg').trim()
@@ -114,6 +111,7 @@ router.post('/messages', async (req, res) => {
 
   let result
   try {
+    const messageId = crypto.randomUUID()
     result = await runQuery<{
       id: string
       body: string | null
@@ -121,11 +119,11 @@ router.post('/messages', async (req, res) => {
       created_at: string
     }>(
       `
-        INSERT INTO community_messages (user_id, body, image_url)
-        VALUES ($1, $2, $3)
+        INSERT INTO community_messages (id, user_id, body, image_url, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, NOW(), NOW())
         RETURNING id, body, image_url, created_at
       `,
-      [auth.userId, body || null, imageUrl]
+      [messageId, auth.userId, body || null, imageUrl]
     )
   } catch (error: any) {
     if (error?.code === '42P01') {
@@ -179,7 +177,7 @@ router.patch('/messages/:messageId', async (req, res) => {
     }>(
       `
         UPDATE community_messages
-        SET body = $1
+        SET body = $1, updated_at = NOW()
         WHERE id = $2 AND user_id = $3
         RETURNING id, body, image_url, created_at
       `,
