@@ -10,6 +10,7 @@
     "dev": "concurrently \"npx tsc --watch\" \"nodemon --exitcrash dist/index.js\"",
     "ngrokfixed": "ngrok http --domain=f82f850f17ee-443370837071186036.ngrok-free.app 3050",
     "db:generate": "node -e \"console.log('Schema source: src/db/schema.sql (SQL-first migrations)')\"",
+    "db:genarate": "pnpm run db:generate",
     "db:push": "pnpm db:migrate",
     "db:migrate": "npx tsc && node dist/db/migrate.js",
     "db:migrate:community": "npx tsc && node dist/db/migrateCommunityMessages.js",
@@ -30,6 +31,7 @@
     "eventsource": "^2.0.2",
     "express": "^4.21.1",
     "express-async-handler": "^1.2.0",
+    "jsonwebtoken": "^9.0.3",
     "multer": "^1.4.5-lts.1",
     "node-fetch": "2.6.1",
     "pg": "^8.20.0",
@@ -40,6 +42,7 @@
   "devDependencies": {
     "@types/cors": "^2.8.15",
     "@types/eventsource": "^1.1.15",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^1.4.11",
     "@types/node-fetch": "^2.6.9",
     "@types/pg": "^8.20.0",
