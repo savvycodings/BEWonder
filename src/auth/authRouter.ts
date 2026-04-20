@@ -9,6 +9,8 @@ import {
 } from './session'
 
 const router = express.Router()
+const DAILY_REWARD_AMOUNTS = [1, 2, 3, 4, 5, 6, 7]
+const DAILY_REWARD_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -51,6 +53,65 @@ function verifyPassword(password: string, storedHash: string) {
     Buffer.from(derivedKey, 'hex'),
     Buffer.from(storedDerivedKey, 'hex')
   )
+}
+
+type DailyRewardRow = {
+  claimed_count: number
+  last_claimed_at: string
+  wallet_balance: number
+}
+
+async function ensureDailyRewardRow(userId: string) {
+  await runQuery(
+    `
+      INSERT INTO user_daily_rewards (user_id, claimed_count, wallet_balance)
+      VALUES ($1, 0, 0)
+      ON CONFLICT (user_id) DO NOTHING
+    `,
+    [userId]
+  )
+
+  const rowResult = await runQuery<DailyRewardRow>(
+    `
+      SELECT claimed_count, last_claimed_at, wallet_balance
+      FROM user_daily_rewards
+      WHERE user_id = $1
+      LIMIT 1
+    `,
+    [userId]
+  )
+
+  return rowResult.rows[0]
+}
+
+function getDailyRewardPayload(row: DailyRewardRow) {
+  const nowMs = Date.now()
+  const maxDays = DAILY_REWARD_AMOUNTS.length
+  const claimedCount = Math.max(0, Math.min(row.claimed_count, maxDays))
+  const lastClaimMs = new Date(row.last_claimed_at).getTime()
+  const nextUnlockMs = lastClaimMs + DAILY_REWARD_INTERVAL_MS
+  const hasCompletedAllRewards = claimedCount >= maxDays
+  const canClaim = !hasCompletedAllRewards && (claimedCount === 0 || nowMs >= nextUnlockMs)
+  const nextUnlockAt =
+    hasCompletedAllRewards || claimedCount === 0 ? null : new Date(nextUnlockMs).toISOString()
+
+  return {
+    walletBalance: row.wallet_balance,
+    claimedCount,
+    currentStreakDays: claimedCount,
+    canClaim,
+    nextUnlockAt,
+    rewards: DAILY_REWARD_AMOUNTS.map((amount, index) => {
+      const day = index + 1
+      let status: 'claimed' | 'unlocked' | 'locked' = 'locked'
+      if (day <= claimedCount) {
+        status = 'claimed'
+      } else if (day === claimedCount + 1 && canClaim) {
+        status = 'unlocked'
+      }
+      return { day, amount, status }
+    }),
+  }
 }
 
 router.post('/register', async (req, res) => {
@@ -143,6 +204,11 @@ router.post('/register', async (req, res) => {
     )
 
     const sessionToken = await createSessionForUser(user.id)
+    try {
+      await ensureDailyRewardRow(user.id)
+    } catch (e) {
+      console.warn('[auth/register] daily rewards row skipped', e)
+    }
     console.log('[auth/register] user created', {
       id: user.id,
       email: user.email,
@@ -266,6 +332,69 @@ router.post('/logout', async (req, res) => {
 
   await revokeSessionByToken(auth.token)
   return res.status(200).json({ ok: true })
+})
+
+router.get('/daily-rewards', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    const row = await ensureDailyRewardRow(auth.userId)
+    if (!row) {
+      return res.status(500).json({ error: 'Unable to load daily rewards' })
+    }
+
+    return res.status(200).json(getDailyRewardPayload(row))
+  } catch (error) {
+    console.error('Failed to load daily rewards', error)
+    return res.status(500).json({ error: 'Unable to load daily rewards' })
+  }
+})
+
+router.post('/daily-rewards/claim', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    await ensureDailyRewardRow(auth.userId)
+    const maxDays = DAILY_REWARD_AMOUNTS.length
+    const updateResult = await runQuery<DailyRewardRow>(
+      `
+        UPDATE user_daily_rewards
+        SET
+          claimed_count = LEAST(claimed_count + 1, $2),
+          wallet_balance = wallet_balance + LEAST(claimed_count + 1, $2),
+          last_claimed_at = NOW(),
+          updated_at = NOW()
+        WHERE user_id = $1
+          AND claimed_count < $2
+          AND (claimed_count = 0 OR last_claimed_at <= NOW() - INTERVAL '24 hours')
+        RETURNING claimed_count, last_claimed_at, wallet_balance
+      `,
+      [auth.userId, maxDays]
+    )
+
+    const updatedRow = updateResult.rows[0]
+    if (!updatedRow) {
+      const currentRow = await ensureDailyRewardRow(auth.userId)
+      if (!currentRow) {
+        return res.status(500).json({ error: 'Unable to load claim status' })
+      }
+      return res.status(409).json({
+        error: 'Reward is not unlocked yet',
+        ...getDailyRewardPayload(currentRow),
+      })
+    }
+
+    return res.status(200).json(getDailyRewardPayload(updatedRow))
+  } catch (error) {
+    console.error('Failed to claim daily reward', error)
+    return res.status(500).json({ error: 'Unable to claim daily reward' })
+  }
 })
 
 router.post('/profile-picture', async (req, res) => {

@@ -44,7 +44,38 @@ ADD COLUMN IF NOT EXISTS image_url TEXT;
 ALTER TABLE community_messages
 ALTER COLUMN body DROP NOT NULL;
 
+CREATE TABLE IF NOT EXISTS user_daily_rewards (
+  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  claimed_count INTEGER NOT NULL DEFAULT 0,
+  last_claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  wallet_balance INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE user_daily_rewards
+ADD COLUMN IF NOT EXISTS claimed_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE user_daily_rewards
+ADD COLUMN IF NOT EXISTS last_claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE user_daily_rewards
+ADD COLUMN IF NOT EXISTS wallet_balance INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE user_daily_rewards
+ALTER COLUMN claimed_count SET DEFAULT 0;
+
+ALTER TABLE user_daily_rewards
+ALTER COLUMN wallet_balance SET DEFAULT 0;
+
+ALTER TABLE user_daily_rewards
+ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE user_daily_rewards
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions (user_id);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions (token_hash);
 CREATE INDEX IF NOT EXISTS idx_community_messages_created_at ON community_messages (created_at);
+CREATE INDEX IF NOT EXISTS idx_user_daily_rewards_last_claimed_at ON user_daily_rewards (last_claimed_at);
