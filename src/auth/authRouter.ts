@@ -13,7 +13,7 @@ const router = express.Router()
 const DAILY_REWARD_AMOUNTS = [1, 2, 3, 4, 5, 6, 7]
 const DAILY_REWARD_INTERVAL_MS = 24 * 60 * 60 * 1000
 
-/** Wonder Store item ids → cost in wonder coins (server is source of truth). */
+/** Wonder Store item ids → cdost in wonder coins (server is source of truth). */
 const WONDER_STORE_ITEM_COSTS: Record<string, number> = {
   midnight: 6,
   sunset: 7,
