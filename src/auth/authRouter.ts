@@ -118,17 +118,34 @@ router.post('/register', async (req, res) => {
   const fullName = String(req.body?.fullName || '').trim()
   const email = String(req.body?.email || '').trim().toLowerCase()
   const password = String(req.body?.password || '')
+  const phone = String(req.body?.phone || '').trim()
   const shippingAddress = String(req.body?.shippingAddress || '').trim()
+  const shippingAddressLine2 = String(req.body?.shippingAddressLine2 || '').trim()
+  const pudoLockerName = String(req.body?.pudoLockerName || '').trim()
+  const pudoLockerAddress = String(req.body?.pudoLockerAddress || '').trim()
+  const eftBankAccountName = String(req.body?.eftBankAccountName || '').trim()
+  const eftBankName = String(req.body?.eftBankName || '').trim()
+  const eftBankAccountNumber = String(req.body?.eftBankAccountNumber || '').trim()
+  const eftBankBranch = String(req.body?.eftBankBranch || '').trim()
   console.log('[auth/register] incoming request', {
     email,
     fullNameLength: fullName.length,
     passwordLength: password.length,
+    hasPhone: Boolean(phone),
   })
 
   if (!fullName || !email || !password) {
     return res.status(400).json({
       error: 'fullName, email, and password are required',
     })
+  }
+
+  if (!phone) {
+    return res.status(400).json({ error: 'phone is required' })
+  }
+  const phoneDigits = phone.replace(/\D/g, '')
+  if (phoneDigits.length < 9) {
+    return res.status(400).json({ error: 'Please enter a valid cellphone number' })
   }
 
   if (!isValidEmail(email)) {
@@ -153,6 +170,14 @@ router.post('/register', async (req, res) => {
       name: string | null
       image: string | null
       shipping_address1: string | null
+      shipping_address2: string | null
+      phone: string | null
+      pudo_locker_name: string | null
+      pudo_locker_address: string | null
+      eft_bank_account_name: string | null
+      eft_bank_name: string | null
+      eft_bank_account_number: string | null
+      eft_bank_branch: string | null
     }>(
       `
         INSERT INTO users (
@@ -161,17 +186,33 @@ router.post('/register', async (req, res) => {
           name,
           image,
           shipping_address1,
+          shipping_address2,
+          phone,
+          pudo_locker_name,
+          pudo_locker_address,
+          eft_bank_account_name,
+          eft_bank_name,
+          eft_bank_account_number,
+          eft_bank_branch,
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
         RETURNING
           id,
           email,
           created_at,
           name,
           image,
-          shipping_address1
+          shipping_address1,
+          shipping_address2,
+          phone,
+          pudo_locker_name,
+          pudo_locker_address,
+          eft_bank_account_name,
+          eft_bank_name,
+          eft_bank_account_number,
+          eft_bank_branch
       `,
       [
         crypto.randomUUID(),
@@ -179,6 +220,14 @@ router.post('/register', async (req, res) => {
         fullName,
         null,
         shippingAddress || null,
+        shippingAddressLine2 || null,
+        phone,
+        pudoLockerName || null,
+        pudoLockerAddress || null,
+        eftBankAccountName || null,
+        eftBankName || null,
+        eftBankAccountNumber || null,
+        eftBankBranch || null,
       ]
     )
 
@@ -221,6 +270,14 @@ router.post('/register', async (req, res) => {
         createdAt: user.created_at,
         profilePicture: user.image,
         shippingAddress: user.shipping_address1,
+        shippingAddressLine2: user.shipping_address2,
+        phone: user.phone,
+        pudoLockerName: user.pudo_locker_name,
+        pudoLockerAddress: user.pudo_locker_address,
+        eftBankAccountName: user.eft_bank_account_name,
+        eftBankName: user.eft_bank_name,
+        eftBankAccountNumber: user.eft_bank_account_number,
+        eftBankBranch: user.eft_bank_branch,
         paymentMethod: null,
       },
       sessionToken,
@@ -230,6 +287,12 @@ router.post('/register', async (req, res) => {
       console.log('[auth/register] duplicate email', { email })
       return res.status(409).json({
         error: 'A user with this email already exists',
+      })
+    }
+    if (error?.code === '42703') {
+      return res.status(503).json({
+        error: 'Database is missing new profile columns',
+        detail: 'Run server migration: pnpm db:migrate (or apply schema.sql) so users.phone and related columns exist.',
       })
     }
 
@@ -283,9 +346,31 @@ router.post('/login', async (req, res) => {
       name: string | null
       image: string | null
       shipping_address1: string | null
+      shipping_address2: string | null
+      phone: string | null
+      pudo_locker_name: string | null
+      pudo_locker_address: string | null
+      eft_bank_account_name: string | null
+      eft_bank_name: string | null
+      eft_bank_account_number: string | null
+      eft_bank_branch: string | null
     }>(
       `
-        SELECT id, email, created_at, name, image, shipping_address1
+        SELECT
+          id,
+          email,
+          created_at,
+          name,
+          image,
+          shipping_address1,
+          shipping_address2,
+          phone,
+          pudo_locker_name,
+          pudo_locker_address,
+          eft_bank_account_name,
+          eft_bank_name,
+          eft_bank_account_number,
+          eft_bank_branch
         FROM users
         WHERE id = $1
         LIMIT 1
@@ -312,6 +397,14 @@ router.post('/login', async (req, res) => {
         createdAt: user.created_at,
         profilePicture: user.image,
         shippingAddress: user.shipping_address1,
+        shippingAddressLine2: user.shipping_address2,
+        phone: user.phone,
+        pudoLockerName: user.pudo_locker_name,
+        pudoLockerAddress: user.pudo_locker_address,
+        eftBankAccountName: user.eft_bank_account_name,
+        eftBankName: user.eft_bank_name,
+        eftBankAccountNumber: user.eft_bank_account_number,
+        eftBankBranch: user.eft_bank_branch,
         paymentMethod: null,
       },
       sessionToken,
@@ -322,6 +415,14 @@ router.post('/login', async (req, res) => {
       error: 'Unable to sign in',
     })
   }
+})
+
+router.get('/me', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  return res.status(200).json({ user: auth.user })
 })
 
 router.post('/logout', async (req, res) => {
@@ -489,7 +590,33 @@ router.patch('/profile-details', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 
-  const shippingAddress = String(req.body?.shippingAddress ?? '').trim()
+  const b = req.body || {}
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : undefined)
+
+  const sets: string[] = []
+  const vals: unknown[] = [auth.userId]
+  let i = 2
+
+  const add = (col: string, value: string | null | undefined) => {
+    if (value === undefined) return
+    sets.push(`${col} = $${i}`)
+    vals.push(value === '' ? null : value)
+    i += 1
+  }
+
+  add('shipping_address1', str(b.shippingAddress))
+  add('shipping_address2', str(b.shippingAddressLine2))
+  add('phone', str(b.phone))
+  add('pudo_locker_name', str(b.pudoLockerName))
+  add('pudo_locker_address', str(b.pudoLockerAddress))
+  add('eft_bank_account_name', str(b.eftBankAccountName))
+  add('eft_bank_name', str(b.eftBankName))
+  add('eft_bank_account_number', str(b.eftBankAccountNumber))
+  add('eft_bank_branch', str(b.eftBankBranch))
+
+  if (!sets.length) {
+    return res.status(400).json({ error: 'No supported fields to update' })
+  }
 
   try {
     const result = await runQuery<{
@@ -499,11 +626,19 @@ router.patch('/profile-details', async (req, res) => {
       name: string | null
       image: string | null
       shipping_address1: string | null
+      shipping_address2: string | null
+      phone: string | null
+      pudo_locker_name: string | null
+      pudo_locker_address: string | null
+      eft_bank_account_name: string | null
+      eft_bank_name: string | null
+      eft_bank_account_number: string | null
+      eft_bank_branch: string | null
     }>(
       `
         UPDATE users
         SET
-          shipping_address1 = $2,
+          ${sets.join(', ')},
           updated_at = NOW()
         WHERE id = $1
         RETURNING
@@ -512,12 +647,23 @@ router.patch('/profile-details', async (req, res) => {
           created_at,
           name,
           image,
-          shipping_address1
+          shipping_address1,
+          shipping_address2,
+          phone,
+          pudo_locker_name,
+          pudo_locker_address,
+          eft_bank_account_name,
+          eft_bank_name,
+          eft_bank_account_number,
+          eft_bank_branch
       `,
-      [auth.userId, shippingAddress || null]
+      vals
     )
 
     const user = result.rows[0]
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' })
+    }
     return res.status(200).json({
       user: {
         id: user.id,
@@ -526,6 +672,14 @@ router.patch('/profile-details', async (req, res) => {
         createdAt: user.created_at,
         profilePicture: user.image,
         shippingAddress: user.shipping_address1,
+        shippingAddressLine2: user.shipping_address2,
+        phone: user.phone,
+        pudoLockerName: user.pudo_locker_name,
+        pudoLockerAddress: user.pudo_locker_address,
+        eftBankAccountName: user.eft_bank_account_name,
+        eftBankName: user.eft_bank_name,
+        eftBankAccountNumber: user.eft_bank_account_number,
+        eftBankBranch: user.eft_bank_branch,
         paymentMethod: null,
       },
     })

@@ -49,6 +49,13 @@ export async function getAuthUserFromRequest(req: Request) {
     image: string | null
     shipping_address1: string | null
     shipping_address2: string | null
+    phone: string | null
+    pudo_locker_name: string | null
+    pudo_locker_address: string | null
+    eft_bank_account_name: string | null
+    eft_bank_name: string | null
+    eft_bank_account_number: string | null
+    eft_bank_branch: string | null
   }>(
     `
       SELECT
@@ -58,7 +65,14 @@ export async function getAuthUserFromRequest(req: Request) {
         u.name,
         u.image,
         u.shipping_address1,
-        u.shipping_address2
+        u.shipping_address2,
+        u.phone,
+        u.pudo_locker_name,
+        u.pudo_locker_address,
+        u.eft_bank_account_name,
+        u.eft_bank_name,
+        u.eft_bank_account_number,
+        u.eft_bank_branch
       FROM sessions s
       JOIN users u ON u.id = s.user_id
       WHERE s.id = $1
@@ -80,8 +94,14 @@ export async function getAuthUserFromRequest(req: Request) {
       createdAt: row.created_at,
       profilePicture: row.image,
       shippingAddress: row.shipping_address1,
-      // DB doesn't have a payment_method column in the Better Auth schema.
-      // We leave it null for now (app UI can still function).
+      shippingAddressLine2: row.shipping_address2,
+      phone: row.phone,
+      pudoLockerName: row.pudo_locker_name,
+      pudoLockerAddress: row.pudo_locker_address,
+      eftBankAccountName: row.eft_bank_account_name,
+      eftBankName: row.eft_bank_name,
+      eftBankAccountNumber: row.eft_bank_account_number,
+      eftBankBranch: row.eft_bank_branch,
       paymentMethod: null,
     },
     token,

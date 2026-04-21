@@ -154,3 +154,25 @@ CREATE INDEX IF NOT EXISTS idx_order_payment_events_order_id ON order_payment_ev
 CREATE UNIQUE INDEX IF NOT EXISTS idx_order_payment_events_idempotent
   ON order_payment_events (provider, external_event_id)
   WHERE external_event_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- Wonderport profile + fulfilment (Better Auth `users` table in production)
+-- ---------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS shipping_address2 TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pudo_locker_name TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pudo_locker_address TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_account_name TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_name TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_account_number TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_branch TEXT;
+
+-- Order checkout snapshots (delivery choice, contact, customer bank for EFT matching)
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_method TEXT NOT NULL DEFAULT 'standard';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS contact_phone TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS contact_email TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS pudo_locker_name TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS pudo_locker_address TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_eft_account_name TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_eft_bank_name TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_eft_account_number TEXT;

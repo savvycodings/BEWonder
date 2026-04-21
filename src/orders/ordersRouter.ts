@@ -8,7 +8,15 @@ import { createPeachCheckout, peachPaymentWidgetUrl } from './peachClient'
 
 const router = express.Router()
 
+/** South Africa domestic tiers (order currency must be ZAR). */
+const SHIPPING_PUDO_CENTS_ZAR = 7000
+const SHIPPING_STANDARD_CENTS_ZAR = 15000
+
 type LineInput = { productId: string; quantity: number }
+
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+}
 
 type ProductRow = {
   id: number
@@ -119,14 +127,71 @@ router.post('/', async (req, res) => {
   }
 
   const subtotal = lines.reduce((s, l) => s + l.lineTotal, 0)
-  const shippingCents = 0
+
+  const deliveryMethod = String(req.body?.deliveryMethod || 'standard').toLowerCase()
+  if (deliveryMethod !== 'pudo' && deliveryMethod !== 'standard') {
+    return res.status(400).json({ error: 'deliveryMethod must be pudo or standard' })
+  }
+
+  const contactPhone = String(req.body?.contactPhone || '').trim()
+  const contactEmailRaw = String(req.body?.contactEmail || '').trim().toLowerCase()
+  const contactEmail = contactEmailRaw || String(auth.user.email || '').trim().toLowerCase()
+  if (!contactPhone) {
+    return res.status(400).json({ error: 'contactPhone is required' })
+  }
+  if (contactPhone.replace(/\D/g, '').length < 9) {
+    return res.status(400).json({ error: 'contactPhone must be a valid cellphone number' })
+  }
+  if (!contactEmail || !isValidEmail(contactEmail)) {
+    return res.status(400).json({ error: 'contactEmail must be a valid email address' })
+  }
+
+  const shippingAddressFull = String(req.body?.shippingAddressFull || '').trim()
+  const shippingAddressLine2Order = String(req.body?.shippingAddressLine2 || '').trim()
+  const pudoLockerName = String(req.body?.pudoLockerName || '').trim()
+  const pudoLockerAddress = String(req.body?.pudoLockerAddress || '').trim()
+
+  if (deliveryMethod === 'standard' && !shippingAddressFull) {
+    return res.status(400).json({ error: 'shippingAddressFull is required for courier delivery' })
+  }
+  if (deliveryMethod === 'pudo' && (!pudoLockerName || !pudoLockerAddress)) {
+    return res.status(400).json({
+      error: 'pudoLockerName and pudoLockerAddress are required for Pudo locker delivery',
+    })
+  }
+
+  const customerEftAccountName = String(req.body?.customerEftAccountName || '').trim()
+  const customerEftBankName = String(req.body?.customerEftBankName || '').trim()
+  const customerEftAccountNumber = String(req.body?.customerEftAccountNumber || '').trim()
+
+  let shippingCents = 0
+  if (currency === 'ZAR') {
+    shippingCents =
+      deliveryMethod === 'pudo' ? SHIPPING_PUDO_CENTS_ZAR : SHIPPING_STANDARD_CENTS_ZAR
+  } else {
+    return res.status(400).json({
+      error: 'Domestic shipping (Pudo R70 / standard R150) applies to ZAR-priced items only',
+      detail: `This cart is priced in ${currency}.`,
+    })
+  }
+
   const total = subtotal + shippingCents
   const initialStatus = paymentMethod === 'eft' ? 'awaiting_proof' : 'pending_payment'
 
   const referenceCode = await generateUniqueReferenceCode()
   const shipName = auth.user.fullName || ''
-  const ship1 = auth.user.shippingAddress || null
-  const ship2 = null
+  let ship1: string | null = null
+  let ship2: string | null = null
+  if (deliveryMethod === 'standard') {
+    ship1 = shippingAddressFull
+    ship2 = shippingAddressLine2Order || null
+  } else {
+    ship1 = `Pudo locker: ${pudoLockerName}`
+    ship2 = pudoLockerAddress
+  }
+
+  const orderPudoName = deliveryMethod === 'pudo' ? pudoLockerName : null
+  const orderPudoAddr = deliveryMethod === 'pudo' ? pudoLockerAddress : null
 
   const insert = await runQuery<{ id: string }>(
     `
@@ -134,12 +199,18 @@ router.post('/', async (req, res) => {
         user_id, reference_code, status, payment_method, currency_code,
         subtotal_cents, shipping_cents, total_cents,
         shipping_snapshot_name, shipping_snapshot_line1, shipping_snapshot_line2,
+        delivery_method, contact_phone, contact_email,
+        pudo_locker_name, pudo_locker_address,
+        customer_eft_account_name, customer_eft_bank_name, customer_eft_account_number,
         peach_merchant_transaction_id, updated_at
       )
       VALUES (
         $1, $2, $3, $4, $5,
         $6, $7, $8,
         $9, $10, $11,
+        $12, $13, $14,
+        $15, $16,
+        $17, $18, $19,
         $2, NOW()
       )
       RETURNING id
@@ -156,6 +227,14 @@ router.post('/', async (req, res) => {
       shipName,
       ship1,
       ship2,
+      deliveryMethod,
+      contactPhone,
+      contactEmail,
+      orderPudoName,
+      orderPudoAddr,
+      customerEftAccountName || null,
+      customerEftBankName || null,
+      customerEftAccountNumber || null,
     ]
   )
   const orderId = insert.rows[0]?.id
@@ -188,7 +267,18 @@ router.post('/', async (req, res) => {
       INSERT INTO order_payment_events (order_id, provider, event_type, status_after, payload_json)
       VALUES ($1, $2, 'order_created', $3, $4::jsonb)
     `,
-    [orderId, paymentMethod, initialStatus, JSON.stringify({ referenceCode, totalCents: total })]
+    [
+      orderId,
+      paymentMethod,
+      initialStatus,
+      JSON.stringify({
+        referenceCode,
+        totalCents: total,
+        deliveryMethod,
+        shippingCents,
+        contactEmail,
+      }),
+    ]
   )
 
   return res.status(201).json({
@@ -255,6 +345,14 @@ router.get('/:orderId', async (req, res) => {
     shipping_snapshot_name: string | null
     shipping_snapshot_line1: string | null
     shipping_snapshot_line2: string | null
+    delivery_method: string | null
+    contact_phone: string | null
+    contact_email: string | null
+    pudo_locker_name: string | null
+    pudo_locker_address: string | null
+    customer_eft_account_name: string | null
+    customer_eft_bank_name: string | null
+    customer_eft_account_number: string | null
     peach_checkout_id: string | null
     eft_proof_image_url: string | null
     eft_customer_note: string | null
@@ -265,6 +363,9 @@ router.get('/:orderId', async (req, res) => {
         id, reference_code, status, payment_method, currency_code,
         subtotal_cents, shipping_cents, total_cents,
         shipping_snapshot_name, shipping_snapshot_line1, shipping_snapshot_line2,
+        delivery_method, contact_phone, contact_email,
+        pudo_locker_name, pudo_locker_address,
+        customer_eft_account_name, customer_eft_bank_name, customer_eft_account_number,
         peach_checkout_id, eft_proof_image_url, eft_customer_note, created_at
       FROM orders
       WHERE id = $1 AND user_id = $2
@@ -309,6 +410,14 @@ router.get('/:orderId', async (req, res) => {
         line1: order.shipping_snapshot_line1,
         line2: order.shipping_snapshot_line2,
       },
+      deliveryMethod: order.delivery_method || 'standard',
+      contactPhone: order.contact_phone,
+      contactEmail: order.contact_email,
+      pudoLockerName: order.pudo_locker_name,
+      pudoLockerAddress: order.pudo_locker_address,
+      customerEftAccountName: order.customer_eft_account_name,
+      customerEftBankName: order.customer_eft_bank_name,
+      customerEftAccountNumber: order.customer_eft_account_number,
       peachCheckoutId: order.peach_checkout_id,
       eftProofImageUrl: order.eft_proof_image_url,
       eftCustomerNote: order.eft_customer_note,

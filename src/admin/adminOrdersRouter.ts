@@ -103,10 +103,31 @@ router.get('/users/:userId/orders', requireAdmin, async (req, res) => {
     image: string | null
     shipping_address1: string | null
     shipping_address2: string | null
+    phone: string | null
+    pudo_locker_name: string | null
+    pudo_locker_address: string | null
+    eft_bank_account_name: string | null
+    eft_bank_name: string | null
+    eft_bank_account_number: string | null
+    eft_bank_branch: string | null
     created_at: string
   }>(
     `
-      SELECT id, email, name, image, shipping_address1, shipping_address2, created_at
+      SELECT
+        id,
+        email,
+        name,
+        image,
+        shipping_address1,
+        shipping_address2,
+        phone,
+        pudo_locker_name,
+        pudo_locker_address,
+        eft_bank_account_name,
+        eft_bank_name,
+        eft_bank_account_number,
+        eft_bank_branch,
+        created_at
       FROM users
       WHERE id = $1
       LIMIT 1
@@ -141,8 +162,15 @@ router.get('/users/:userId/orders', requireAdmin, async (req, res) => {
       email: user.email,
       name: user.name,
       image: user.image,
+      phone: user.phone,
       shippingAddress1: user.shipping_address1,
       shippingAddress2: user.shipping_address2,
+      pudoLockerName: user.pudo_locker_name,
+      pudoLockerAddress: user.pudo_locker_address,
+      eftBankAccountName: user.eft_bank_account_name,
+      eftBankName: user.eft_bank_name,
+      eftBankAccountNumber: user.eft_bank_account_number,
+      eftBankBranch: user.eft_bank_branch,
       createdAt: user.created_at,
     },
     orders: orders.rows.map((o) => ({
@@ -174,6 +202,14 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
     shipping_snapshot_name: string | null
     shipping_snapshot_line1: string | null
     shipping_snapshot_line2: string | null
+    delivery_method: string | null
+    contact_phone: string | null
+    contact_email: string | null
+    pudo_locker_name: string | null
+    pudo_locker_address: string | null
+    customer_eft_account_name: string | null
+    customer_eft_bank_name: string | null
+    customer_eft_account_number: string | null
     peach_checkout_id: string | null
     peach_resource_path: string | null
     eft_proof_image_url: string | null
@@ -186,6 +222,13 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
     image: string | null
     shipping_address1: string | null
     shipping_address2: string | null
+    phone: string | null
+    pudo_locker_name_user: string | null
+    pudo_locker_address_user: string | null
+    eft_bank_account_name: string | null
+    eft_bank_name: string | null
+    eft_bank_account_number: string | null
+    eft_bank_branch: string | null
   }>(
     `
       SELECT
@@ -201,6 +244,14 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
         o.shipping_snapshot_name,
         o.shipping_snapshot_line1,
         o.shipping_snapshot_line2,
+        o.delivery_method,
+        o.contact_phone,
+        o.contact_email,
+        o.pudo_locker_name,
+        o.pudo_locker_address,
+        o.customer_eft_account_name,
+        o.customer_eft_bank_name,
+        o.customer_eft_account_number,
         o.peach_checkout_id,
         o.peach_resource_path,
         o.eft_proof_image_url,
@@ -212,7 +263,14 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
         u.name,
         u.image,
         u.shipping_address1,
-        u.shipping_address2
+        u.shipping_address2,
+        u.phone,
+        u.pudo_locker_name AS pudo_locker_name_user,
+        u.pudo_locker_address AS pudo_locker_address_user,
+        u.eft_bank_account_name,
+        u.eft_bank_name,
+        u.eft_bank_account_number,
+        u.eft_bank_branch
       FROM orders o
       JOIN users u ON u.id = o.user_id
       WHERE o.id = $1
@@ -276,6 +334,14 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
         line1: order.shipping_snapshot_line1,
         line2: order.shipping_snapshot_line2,
       },
+      deliveryMethod: order.delivery_method || 'standard',
+      contactPhone: order.contact_phone,
+      contactEmail: order.contact_email,
+      pudoLockerName: order.pudo_locker_name,
+      pudoLockerAddress: order.pudo_locker_address,
+      customerEftAccountName: order.customer_eft_account_name,
+      customerEftBankName: order.customer_eft_bank_name,
+      customerEftAccountNumber: order.customer_eft_account_number,
       peachCheckoutId: order.peach_checkout_id,
       peachResourcePath: order.peach_resource_path,
       eftProofImageUrl: order.eft_proof_image_url,
@@ -288,8 +354,15 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
       email: order.email,
       name: order.name,
       image: order.image,
+      phone: order.phone,
       shippingAddress1: order.shipping_address1,
       shippingAddress2: order.shipping_address2,
+      pudoLockerName: order.pudo_locker_name_user,
+      pudoLockerAddress: order.pudo_locker_address_user,
+      eftBankAccountName: order.eft_bank_account_name,
+      eftBankName: order.eft_bank_name,
+      eftBankAccountNumber: order.eft_bank_account_number,
+      eftBankBranch: order.eft_bank_branch,
     },
     lineItems: lines.rows.map((l) => ({
       id: l.id,
