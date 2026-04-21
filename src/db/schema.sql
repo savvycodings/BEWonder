@@ -123,6 +123,9 @@ CREATE TABLE IF NOT EXISTS orders (
   CONSTRAINT orders_reference_unique UNIQUE (reference_code)
 );
 
+-- ZAR spend loyalty: wonder coins granted once when order becomes paid (see Peach webhook). NULL = not evaluated yet.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS spend_loyalty_coins_awarded INTEGER;
+
 CREATE TABLE IF NOT EXISTS order_line_items (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   order_id UUID NOT NULL REFERENCES orders (id) ON DELETE CASCADE,
@@ -190,6 +193,18 @@ CREATE TABLE IF NOT EXISTS user_wonder_store_purchases (
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_wonder_store_purchases_user_id ON user_wonder_store_purchases (user_id);
+
+-- One-time promotional / redeem codes (each user can redeem a given code_key once).
+CREATE TABLE IF NOT EXISTS user_redeem_codes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT NOT NULL,
+  code_key TEXT NOT NULL,
+  coins_awarded INTEGER NOT NULL CHECK (coins_awarded > 0),
+  redeemed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, code_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_redeem_codes_user_id ON user_redeem_codes (user_id);
 
 -- Order checkout snapshots (delivery choice, contact, customer bank for EFT matching)
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_method TEXT NOT NULL DEFAULT 'standard';

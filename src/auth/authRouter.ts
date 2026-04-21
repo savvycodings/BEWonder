@@ -23,6 +23,18 @@ const WONDER_STORE_ITEM_COSTS: Record<string, number> = {
   forest: 6,
 }
 
+/** Normalized code key → wonder coins awarded (extend as you add codes). */
+const REDEEM_CODE_REWARDS: Record<string, number> = {
+  'WP-COMICCON': 10,
+}
+
+function normalizeRedeemCode(raw: string): string {
+  return String(raw || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '')
+}
+
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -487,6 +499,82 @@ router.get('/me', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' })
   }
   return res.status(200).json({ user: auth.user })
+})
+
+router.post('/redeem-code', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  const codeKey = normalizeRedeemCode(String(req.body?.code || ''))
+  if (!codeKey) {
+    return res.status(400).json({ error: 'Enter a code to redeem.' })
+  }
+
+  const coins = REDEEM_CODE_REWARDS[codeKey]
+  if (coins == null) {
+    return res.status(400).json({ error: 'Invalid or unknown code.' })
+  }
+
+  const userId = auth.userId
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    const ins = await client.query<{ id: string }>(
+      `
+        INSERT INTO user_redeem_codes (user_id, code_key, coins_awarded)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, code_key) DO NOTHING
+        RETURNING id
+      `,
+      [userId, codeKey, coins]
+    )
+
+    if (!ins.rows[0]) {
+      await client.query('ROLLBACK')
+      return res.status(409).json({ error: 'You have already redeemed this code.' })
+    }
+
+    const bal = await client.query<{ wonder_coins: number }>(
+      `
+        UPDATE users
+        SET wonder_coins = wonder_coins + $2, updated_at = NOW()
+        WHERE id::text = $1
+        RETURNING wonder_coins
+      `,
+      [userId, coins]
+    )
+
+    if (!bal.rows[0]) {
+      await client.query('ROLLBACK')
+      return res.status(500).json({ error: 'Unable to apply reward' })
+    }
+
+    await client.query('COMMIT')
+
+    return res.status(200).json({
+      wonderCoins: bal.rows[0].wonder_coins,
+      message: `You received ${coins} Wonder coins.`,
+    })
+  } catch (error: any) {
+    try {
+      await client.query('ROLLBACK')
+    } catch {
+      /* ignore */
+    }
+    if (error?.code === '42P01') {
+      return res.status(503).json({
+        error: 'Redeem is not available yet',
+        detail: 'Run db:migrate so user_redeem_codes exists.',
+      })
+    }
+    console.error('Failed to redeem code', error)
+    return res.status(500).json({ error: 'Unable to redeem code' })
+  } finally {
+    client.release()
+  }
 })
 
 router.post('/logout', async (req, res) => {

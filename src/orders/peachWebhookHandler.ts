@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
-import { runQuery } from '../db/client'
+import { pool } from '../db/client'
 import { parsePeachWebhookBody } from './peachWebhookDecrypt'
+import { applySpendLoyaltyForNewlyPaidOrder } from './orderSpendLoyalty'
 
 function resultCodeSuccess(code: unknown): boolean {
   const c = String(code || '')
@@ -33,47 +34,96 @@ export async function handlePeachWebhook(req: Request, res: Response) {
     return res.status(200).json({ ok: true, ignored: true })
   }
 
-  const orderRes = await runQuery<{ id: string; payment_method: string; status: string }>(
-    `SELECT id, payment_method, status FROM orders WHERE reference_code = $1 LIMIT 1`,
-    [merchantRef]
-  )
-  const order = orderRes.rows[0]
-  if (!order || order.payment_method !== 'peach') {
-    return res.status(200).json({ ok: true, ignored: true })
-  }
-
-  const statusAfter = success ? 'paid' : order.status === 'paid' ? 'paid' : 'failed'
+  const statusAfter = success ? 'paid' : 'failed'
   const shortId = typeof (payload as any).shortId === 'string' ? (payload as any).shortId : ''
   const externalId =
     paymentId || (shortId ? `${merchantRef}:${shortId}` : `${merchantRef}:${String(result.code || '')}`)
 
+  const client = await pool.connect()
   try {
-    await runQuery(
+    await client.query('BEGIN')
+
+    const orderRes = await client.query<{
+      id: string
+      user_id: string
+      payment_method: string
+      status: string
+      total_cents: number
+      currency_code: string
+    }>(
       `
-        INSERT INTO order_payment_events (id, order_id, provider, event_type, status_after, external_event_id, payload_json)
-        VALUES (gen_random_uuid(), $1, 'peach', 'webhook', $2, $3, $4::jsonb)
+        SELECT id, user_id, payment_method, status, total_cents, currency_code
+        FROM orders
+        WHERE reference_code = $1
+        LIMIT 1
+        FOR UPDATE
       `,
-      [order.id, statusAfter, externalId, JSON.stringify({ type, payload })]
+      [merchantRef]
     )
-  } catch (e: any) {
-    if (e?.code === '23505') {
-      return res.status(200).json({ ok: true, duplicate: true })
+    const order = orderRes.rows[0]
+    if (!order || order.payment_method !== 'peach') {
+      await client.query('ROLLBACK')
+      return res.status(200).json({ ok: true, ignored: true })
     }
-    console.error('[peach webhook] insert event failed', e)
+
+    const resolvedStatusAfter =
+      success ? 'paid' : order.status === 'paid' ? 'paid' : 'failed'
+    const becamePaid = success && order.status !== 'paid'
+
+    try {
+      await client.query(
+        `
+          INSERT INTO order_payment_events (id, order_id, provider, event_type, status_after, external_event_id, payload_json)
+          VALUES (gen_random_uuid(), $1, 'peach', 'webhook', $2, $3, $4::jsonb)
+        `,
+        [order.id, resolvedStatusAfter, externalId, JSON.stringify({ type, payload })]
+      )
+    } catch (e: any) {
+      if (e?.code === '23505') {
+        await client.query('ROLLBACK')
+        return res.status(200).json({ ok: true, duplicate: true })
+      }
+      console.error('[peach webhook] insert event failed', e)
+      await client.query('ROLLBACK')
+      return res.status(500).json({ ok: false })
+    }
+
+    await client.query(
+      `
+        UPDATE orders
+        SET
+          status = CASE
+            WHEN $2::text = 'paid' THEN 'paid'
+            WHEN $2::text = 'failed' AND status = 'pending_payment' THEN 'failed'
+            ELSE status
+          END,
+          peach_checkout_id = COALESCE(peach_checkout_id, $3),
+          updated_at = NOW()
+        WHERE id = $1
+      `,
+      [order.id, resolvedStatusAfter, paymentId]
+    )
+
+    if (becamePaid && success) {
+      await applySpendLoyaltyForNewlyPaidOrder(client, {
+        orderId: order.id,
+        userId: order.user_id,
+        currencyCode: order.currency_code,
+        totalCents: order.total_cents,
+      })
+    }
+
+    await client.query('COMMIT')
+    return res.status(200).json({ ok: true })
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK')
+    } catch {
+      /* ignore */
+    }
+    console.error('[peach webhook] transaction failed', error)
     return res.status(500).json({ ok: false })
+  } finally {
+    client.release()
   }
-
-  await runQuery(
-    `
-      UPDATE orders
-      SET
-        status = CASE WHEN $2::text = 'paid' THEN 'paid' WHEN $2::text = 'failed' AND status = 'pending_payment' THEN 'failed' ELSE status END,
-        peach_checkout_id = COALESCE(peach_checkout_id, $3),
-        updated_at = NOW()
-      WHERE id = $1
-    `,
-    [order.id, statusAfter, paymentId]
-  )
-
-  return res.status(200).json({ ok: true })
 }
