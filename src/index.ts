@@ -1,5 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
+import fs from 'fs'
+import path from 'path'
 import chatRouter from './chat/chatRouter'
 import imagesRouter from './images/imagesRouter'
 import authRouter from './auth/authRouter'
@@ -13,6 +15,14 @@ import bodyParser from 'body-parser'
 import cors from 'cors'
 
 const app = express()
+const workspaceRoot = path.resolve(__dirname, '..', '..')
+const publicCandidates = [
+  path.resolve(workspaceRoot, 'app', 'public'),
+  path.resolve(process.cwd(), '..', 'app', 'public'),
+  path.resolve(process.cwd(), 'app', 'public'),
+]
+const publicDir = publicCandidates.find((dir) => fs.existsSync(dir))
+const homepageImgsDir = publicDir ? path.resolve(publicDir, 'homepageimgs') : ''
 
 app.use(cors())
 app.post(
@@ -22,6 +32,14 @@ app.post(
 )
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }))
 app.use(bodyParser.json({ limit: '50mb' }))
+if (publicDir) {
+  app.use('/homepageimgs', express.static(homepageImgsDir))
+  app.use(express.static(publicDir))
+  console.log(`[static] serving public assets from ${publicDir}`)
+  console.log(`[static] serving homepage images from ${homepageImgsDir}`)
+} else {
+  console.warn('[static] app/public not found; coin SVG assets will 404')
+}
 
 app.get('/', (req, res) => {
   res.send('Hello World!')

@@ -605,6 +605,19 @@ router.patch('/profile-details', async (req, res) => {
 
   const b = req.body || {}
   const str = (v: unknown) => (typeof v === 'string' ? v.trim() : undefined)
+  const nextName = str(b.fullName)
+  const nextEmailRaw = str(b.email)
+  const nextEmail = nextEmailRaw ? nextEmailRaw.toLowerCase() : undefined
+
+  if (nextName !== undefined && !nextName) {
+    return res.status(400).json({ error: 'fullName cannot be empty' })
+  }
+  if (nextEmail !== undefined) {
+    if (!nextEmail) return res.status(400).json({ error: 'email cannot be empty' })
+    if (!isValidEmail(nextEmail)) {
+      return res.status(400).json({ error: 'Email address is invalid' })
+    }
+  }
 
   const sets: string[] = []
   const vals: unknown[] = [auth.userId]
@@ -619,6 +632,8 @@ router.patch('/profile-details', async (req, res) => {
 
   add('shipping_address1', str(b.shippingAddress))
   add('shipping_address2', str(b.shippingAddressLine2))
+  add('name', nextName)
+  add('email', nextEmail)
   add('phone', str(b.phone))
   add('pudo_locker_name', str(b.pudoLockerName))
   add('pudo_locker_address', str(b.pudoLockerAddress))
@@ -679,6 +694,20 @@ router.patch('/profile-details', async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: 'User not found' })
     }
+
+    // Keep password provider login in sync if email changed.
+    if (nextEmail && nextEmail !== auth.user.email.toLowerCase()) {
+      await runQuery(
+        `
+          UPDATE accounts
+          SET provider_user_id = $2, updated_at = NOW()
+          WHERE user_id = $1
+            AND provider_id = 'password'
+        `,
+        [auth.userId, nextEmail]
+      )
+    }
+
     return res.status(200).json({
       user: {
         id: user.id,
@@ -699,7 +728,12 @@ router.patch('/profile-details', async (req, res) => {
         paymentMethod: null,
       },
     })
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.code === '23505') {
+      return res.status(409).json({
+        error: 'A user with this email already exists',
+      })
+    }
     console.error('Failed to update profile details', error)
     return res.status(500).json({
       error: 'Unable to update profile details',
