@@ -1,6 +1,9 @@
 import express from 'express'
-import { runQuery } from '../db/client'
+import { pool, runQuery } from '../db/client'
 import { requireAdmin, signAdminJwt, verifyAdminPassword } from './adminAuth'
+import { applySpendLoyaltyForNewlyPaidOrder } from '../orders/orderSpendLoyalty'
+import { createTcgShipmentForPaidOrderIfNeeded } from '../orders/tcgFulfillment'
+import { tcgConfigReadyForShipment } from '../orders/tcgConfig'
 
 const router = express.Router()
 
@@ -216,6 +219,12 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
     eft_customer_note: string | null
     eft_marked_paid_at: string | null
     eft_verified_at: string | null
+    tcg_shipment_id: string | null
+    tcg_short_tracking_reference: string | null
+    tcg_custom_tracking_reference: string | null
+    tcg_shipment_status: string | null
+    tcg_last_sync_at: string | null
+    tcg_last_error: string | null
     created_at: string
     email: string | null
     name: string | null
@@ -258,6 +267,12 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
         o.eft_customer_note,
         o.eft_marked_paid_at,
         o.eft_verified_at,
+        o.tcg_shipment_id,
+        o.tcg_short_tracking_reference,
+        o.tcg_custom_tracking_reference,
+        o.tcg_shipment_status,
+        o.tcg_last_sync_at,
+        o.tcg_last_error,
         o.created_at,
         u.email,
         u.name,
@@ -348,6 +363,12 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
       eftCustomerNote: order.eft_customer_note,
       eftMarkedPaidAt: order.eft_marked_paid_at,
       eftVerifiedAt: order.eft_verified_at,
+      tcgShipmentId: order.tcg_shipment_id,
+      tcgShortTrackingReference: order.tcg_short_tracking_reference,
+      tcgCustomTrackingReference: order.tcg_custom_tracking_reference,
+      tcgShipmentStatus: order.tcg_shipment_status,
+      tcgLastSyncAt: order.tcg_last_sync_at,
+      tcgLastError: order.tcg_last_error,
       createdAt: order.created_at,
     },
     user: {
@@ -383,6 +404,187 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
       createdAt: e.created_at,
       payload: e.payload_json,
     })),
+  })
+})
+
+/**
+ * After reviewing the customer's EFT proof image, mark the order paid, apply spend loyalty,
+ * and enqueue ShipLogic shipment creation (same as Peach-paid flow).
+ */
+router.post('/orders/:orderId/accept-eft', requireAdmin, async (req, res) => {
+  const orderId = String(req.params.orderId || '').trim()
+  if (!orderId) return res.status(400).json({ error: 'orderId required' })
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    const ores = await client.query<{
+      id: string
+      user_id: string
+      status: string
+      payment_method: string
+      currency_code: string
+      total_cents: number
+      eft_proof_image_url: string | null
+    }>(
+      `
+        SELECT id, user_id, status, payment_method, currency_code, total_cents, eft_proof_image_url
+        FROM orders
+        WHERE id = $1::uuid
+        FOR UPDATE
+      `,
+      [orderId]
+    )
+    const row = ores.rows[0]
+    if (!row) {
+      await client.query('ROLLBACK')
+      return res.status(404).json({ error: 'Order not found' })
+    }
+    if (row.payment_method !== 'eft') {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ error: 'Order is not EFT' })
+    }
+    if (row.status === 'paid') {
+      await client.query('ROLLBACK')
+      return res.status(200).json({
+        ok: true,
+        alreadyPaid: true,
+        message: 'Order was already marked paid.',
+      })
+    }
+    if (row.status !== 'awaiting_proof') {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ error: `Cannot accept EFT for status ${row.status}` })
+    }
+    if (!row.eft_proof_image_url) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ error: 'Customer has not uploaded proof of payment yet.' })
+    }
+
+    const upd = await client.query<{ id: string }>(
+      `
+        UPDATE orders
+        SET
+          status = 'paid',
+          eft_verified_at = NOW(),
+          updated_at = NOW()
+        WHERE id = $1::uuid
+          AND payment_method = 'eft'
+          AND status = 'awaiting_proof'
+          AND eft_proof_image_url IS NOT NULL
+        RETURNING id
+      `,
+      [orderId]
+    )
+    if (!upd.rows[0]) {
+      await client.query('ROLLBACK')
+      return res.status(409).json({ error: 'Could not update order (state changed).' })
+    }
+
+    await client.query(
+      `
+        INSERT INTO order_payment_events (order_id, provider, event_type, status_after, payload_json)
+        VALUES ($1, 'eft', 'admin_accept_proof', 'paid', $2::jsonb)
+      `,
+      [orderId, JSON.stringify({ verifiedAt: new Date().toISOString() })]
+    )
+
+    await applySpendLoyaltyForNewlyPaidOrder(client, {
+      orderId: row.id,
+      userId: row.user_id,
+      currencyCode: row.currency_code,
+      totalCents: row.total_cents,
+    })
+
+    await client.query('COMMIT')
+
+    void createTcgShipmentForPaidOrderIfNeeded(orderId).catch((err) =>
+      console.error('[tcg] EFT accept: shipment create failed', orderId, err)
+    )
+
+    return res.status(200).json({
+      ok: true,
+      status: 'paid',
+      message:
+        'Payment accepted. Courier / waybill booking runs in the background when ShipLogic (TCG) is enabled and configured.',
+    })
+  } catch (e: any) {
+    try {
+      await client.query('ROLLBACK')
+    } catch {
+      /* ignore */
+    }
+    console.error('[admin/accept-eft]', e)
+    return res.status(500).json({ error: 'Failed to accept proof' })
+  } finally {
+    client.release()
+  }
+})
+
+/**
+ * Manually (re)run ShipLogic booking for a **paid** order that has no `tcg_shipment_id` yet
+ * (e.g. TCG was off at payment time, or the first attempt failed). Idempotent if already booked.
+ */
+router.post('/orders/:orderId/book-courier', requireAdmin, async (req, res) => {
+  const orderId = String(req.params.orderId || '').trim()
+  if (!orderId) return res.status(400).json({ error: 'orderId required' })
+
+  if (!tcgConfigReadyForShipment()) {
+    return res.status(400).json({
+      error: 'ShipLogic (TCG) is not ready',
+      detail:
+        'Set TCG_ENABLED=true, TCG_API_BASE_URL, TCG_API_KEY, TCG_COLLECTION_ADDRESS_JSON, and TCG_COLLECTION_CONTACT_JSON on the server.',
+    })
+  }
+
+  const cur = await runQuery<{ status: string; tcg_shipment_id: string | null }>(
+    `SELECT status, tcg_shipment_id FROM orders WHERE id = $1::uuid LIMIT 1`,
+    [orderId]
+  )
+  const row = cur.rows[0]
+  if (!row) return res.status(404).json({ error: 'Order not found' })
+  if (row.status !== 'paid') {
+    return res.status(400).json({ error: 'Order must be paid before booking the courier / waybill.' })
+  }
+  if (row.tcg_shipment_id) {
+    return res.status(200).json({
+      ok: true,
+      alreadyBooked: true,
+      tcgShipmentId: row.tcg_shipment_id,
+      message: 'This order already has a courier booking.',
+    })
+  }
+
+  await createTcgShipmentForPaidOrderIfNeeded(orderId)
+
+  const after = await runQuery<{
+    tcg_shipment_id: string | null
+    tcg_short_tracking_reference: string | null
+    tcg_custom_tracking_reference: string | null
+    tcg_shipment_status: string | null
+    tcg_last_error: string | null
+  }>(
+    `
+      SELECT tcg_shipment_id, tcg_short_tracking_reference, tcg_custom_tracking_reference,
+             tcg_shipment_status, tcg_last_error
+      FROM orders WHERE id = $1::uuid LIMIT 1
+    `,
+    [orderId]
+  )
+  const a = after.rows[0]
+  return res.status(200).json({
+    ok: true,
+    tcgShipmentId: a?.tcg_shipment_id ?? null,
+    tcgShortTrackingReference: a?.tcg_short_tracking_reference ?? null,
+    tcgCustomTrackingReference: a?.tcg_custom_tracking_reference ?? null,
+    tcgShipmentStatus: a?.tcg_shipment_status ?? null,
+    tcgLastError: a?.tcg_last_error ?? null,
+    message: a?.tcg_shipment_id
+      ? 'Courier booking created. Use short tracking reference as your waybill reference where applicable.'
+      : a?.tcg_last_error
+        ? 'Booking did not complete; see tcgLastError.'
+        : 'No booking was created (check server logs and ShipLogic env).',
   })
 })
 

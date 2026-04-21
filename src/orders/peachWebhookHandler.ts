@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { pool } from '../db/client'
 import { parsePeachWebhookBody } from './peachWebhookDecrypt'
 import { applySpendLoyaltyForNewlyPaidOrder } from './orderSpendLoyalty'
+import { createTcgShipmentForPaidOrderIfNeeded } from './tcgFulfillment'
 
 function resultCodeSuccess(code: unknown): boolean {
   const c = String(code || '')
@@ -34,7 +35,6 @@ export async function handlePeachWebhook(req: Request, res: Response) {
     return res.status(200).json({ ok: true, ignored: true })
   }
 
-  const statusAfter = success ? 'paid' : 'failed'
   const shortId = typeof (payload as any).shortId === 'string' ? (payload as any).shortId : ''
   const externalId =
     paymentId || (shortId ? `${merchantRef}:${shortId}` : `${merchantRef}:${String(result.code || '')}`)
@@ -114,6 +114,13 @@ export async function handlePeachWebhook(req: Request, res: Response) {
     }
 
     await client.query('COMMIT')
+
+    if (becamePaid && success) {
+      void createTcgShipmentForPaidOrderIfNeeded(order.id).catch((err) =>
+        console.error('[tcg] create shipment after payment failed', err)
+      )
+    }
+
     return res.status(200).json({ ok: true })
   } catch (error) {
     try {

@@ -126,6 +126,16 @@ CREATE TABLE IF NOT EXISTS orders (
 -- ZAR spend loyalty: wonder coins granted once when order becomes paid (see Peach webhook). NULL = not evaluated yet.
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS spend_loyalty_coins_awarded INTEGER;
 
+-- ShipLogic / The Courier Guy fulfilment (see server/src/orders/tcgFulfillment.ts).
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_shipment_id TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_short_tracking_reference TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_custom_tracking_reference TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_shipment_status TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_last_sync_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_last_error TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_orders_tcg_shipment_id ON orders (tcg_shipment_id) WHERE tcg_shipment_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS order_line_items (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   order_id UUID NOT NULL REFERENCES orders (id) ON DELETE CASCADE,

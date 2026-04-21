@@ -11,6 +11,7 @@ import productsRouter from './products/productsRouter'
 import ordersRouter from './orders/ordersRouter'
 import adminOrdersRouter from './admin/adminOrdersRouter'
 import { handlePeachWebhook } from './orders/peachWebhookHandler'
+import { handleTcgWebhook } from './orders/tcgWebhookHandler'
 import bodyParser from 'body-parser'
 import cors from 'cors'
 
@@ -30,6 +31,7 @@ app.post(
   express.raw({ type: ['application/json', 'text/plain', '*/*'], limit: '2mb' }),
   (req, res) => handlePeachWebhook(req, res)
 )
+app.post('/webhooks/shiplogic', express.json({ limit: '512kb' }), (req, res) => handleTcgWebhook(req, res))
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }))
 app.use(bodyParser.json({ limit: '50mb' }))
 if (publicDir) {
