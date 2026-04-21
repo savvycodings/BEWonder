@@ -1,7 +1,8 @@
 import crypto from 'crypto'
 import express from 'express'
+import type { PoolClient } from 'pg'
 import { v2 as cloudinary } from 'cloudinary'
-import { runQuery } from '../db/client'
+import { pool, runQuery } from '../db/client'
 import {
   createSessionForUser,
   getAuthUserFromRequest,
@@ -11,6 +12,16 @@ import {
 const router = express.Router()
 const DAILY_REWARD_AMOUNTS = [1, 2, 3, 4, 5, 6, 7]
 const DAILY_REWARD_INTERVAL_MS = 24 * 60 * 60 * 1000
+
+/** Wonder Store item ids → cost in wonder coins (server is source of truth). */
+const WONDER_STORE_ITEM_COSTS: Record<string, number> = {
+  midnight: 6,
+  sunset: 7,
+  mint: 5,
+  royal: 8,
+  peach: 4,
+  forest: 6,
+}
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -65,11 +76,10 @@ function verifyPassword(password: string, storedHash: string) {
 type DailyRewardRow = {
   claimed_count: number
   last_claimed_at: string
-  wallet_balance: number
 }
 
-async function ensureDailyRewardRow(userId: string) {
-  await runQuery(
+async function ensureDailyRewardRowTx(client: PoolClient, userId: string) {
+  await client.query(
     `
       INSERT INTO user_daily_rewards (user_id, claimed_count, wallet_balance)
       VALUES ($1, 0, 0)
@@ -78,9 +88,9 @@ async function ensureDailyRewardRow(userId: string) {
     [userId]
   )
 
-  const rowResult = await runQuery<DailyRewardRow>(
+  const rowResult = await client.query<DailyRewardRow>(
     `
-      SELECT claimed_count, last_claimed_at, wallet_balance
+      SELECT claimed_count, last_claimed_at
       FROM user_daily_rewards
       WHERE user_id = $1
       LIMIT 1
@@ -91,7 +101,47 @@ async function ensureDailyRewardRow(userId: string) {
   return rowResult.rows[0]
 }
 
-function getDailyRewardPayload(row: DailyRewardRow) {
+async function ensureDailyRewardRow(userId: string) {
+  const client = await pool.connect()
+  try {
+    return await ensureDailyRewardRowTx(client, userId)
+  } finally {
+    client.release()
+  }
+}
+
+async function getUserWonderCoins(userId: string): Promise<number> {
+  const r = await runQuery<{ wonder_coins: number }>(
+    `
+      SELECT wonder_coins
+      FROM users
+      WHERE id::text = $1
+      LIMIT 1
+    `,
+    [userId]
+  )
+  const v = r.rows[0]?.wonder_coins
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+}
+
+async function getOwnedWonderStoreItemIds(userId: string): Promise<string[]> {
+  const r = await runQuery<{ item_id: string }>(
+    `
+      SELECT item_id
+      FROM user_wonder_store_purchases
+      WHERE user_id = $1
+      ORDER BY created_at ASC
+    `,
+    [userId]
+  )
+  return r.rows.map((row) => row.item_id)
+}
+
+function getDailyRewardPayload(
+  row: DailyRewardRow,
+  wonderCoins: number,
+  ownedStoreItemIds: string[]
+) {
   const nowMs = Date.now()
   const maxDays = DAILY_REWARD_AMOUNTS.length
   const claimedCount = Math.max(0, Math.min(row.claimed_count, maxDays))
@@ -103,7 +153,8 @@ function getDailyRewardPayload(row: DailyRewardRow) {
     hasCompletedAllRewards || claimedCount === 0 ? null : new Date(nextUnlockMs).toISOString()
 
   return {
-    walletBalance: row.wallet_balance,
+    walletBalance: wonderCoins,
+    ownedStoreItemIds,
     claimedCount,
     currentStreakDays: claimedCount,
     canClaim,
@@ -459,8 +510,10 @@ router.get('/daily-rewards', async (req, res) => {
     if (!row) {
       return res.status(500).json({ error: 'Unable to load daily rewards' })
     }
+    const wonderCoins = await getUserWonderCoins(auth.userId)
+    const ownedStoreItemIds = await getOwnedWonderStoreItemIds(auth.userId)
 
-    return res.status(200).json(getDailyRewardPayload(row))
+    return res.status(200).json(getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds))
   } catch (error) {
     console.error('Failed to load daily rewards', error)
     return res.status(500).json({ error: 'Unable to load daily rewards' })
@@ -473,41 +526,161 @@ router.post('/daily-rewards/claim', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 
+  const userId = auth.userId
+  const maxDays = DAILY_REWARD_AMOUNTS.length
+
+  const client = await pool.connect()
   try {
-    await ensureDailyRewardRow(auth.userId)
-    const maxDays = DAILY_REWARD_AMOUNTS.length
-    const updateResult = await runQuery<DailyRewardRow>(
+    await client.query('BEGIN')
+    await ensureDailyRewardRowTx(client, userId)
+
+    const updateResult = await client.query<DailyRewardRow>(
       `
         UPDATE user_daily_rewards
         SET
           claimed_count = LEAST(claimed_count + 1, $2),
-          wallet_balance = wallet_balance + LEAST(claimed_count + 1, $2),
           last_claimed_at = NOW(),
           updated_at = NOW()
         WHERE user_id = $1
           AND claimed_count < $2
           AND (claimed_count = 0 OR last_claimed_at <= NOW() - INTERVAL '24 hours')
-        RETURNING claimed_count, last_claimed_at, wallet_balance
+        RETURNING claimed_count, last_claimed_at
       `,
-      [auth.userId, maxDays]
+      [userId, maxDays]
     )
 
     const updatedRow = updateResult.rows[0]
     if (!updatedRow) {
-      const currentRow = await ensureDailyRewardRow(auth.userId)
+      await client.query('ROLLBACK')
+      const currentRow = await ensureDailyRewardRow(userId)
       if (!currentRow) {
         return res.status(500).json({ error: 'Unable to load claim status' })
       }
+      const wonderCoins = await getUserWonderCoins(userId)
+      const ownedStoreItemIds = await getOwnedWonderStoreItemIds(userId)
       return res.status(409).json({
         error: 'Reward is not unlocked yet',
-        ...getDailyRewardPayload(currentRow),
+        ...getDailyRewardPayload(currentRow, wonderCoins, ownedStoreItemIds),
       })
     }
 
-    return res.status(200).json(getDailyRewardPayload(updatedRow))
+    const newClaimed = Math.max(1, Math.min(updatedRow.claimed_count, maxDays))
+    const coinsAdded = DAILY_REWARD_AMOUNTS[newClaimed - 1] ?? newClaimed
+
+    await client.query(
+      `
+        UPDATE users
+        SET wonder_coins = wonder_coins + $2, updated_at = NOW()
+        WHERE id::text = $1
+      `,
+      [userId, coinsAdded]
+    )
+
+    await client.query('COMMIT')
+
+    const wonderCoins = await getUserWonderCoins(userId)
+    const ownedStoreItemIds = await getOwnedWonderStoreItemIds(userId)
+    return res.status(200).json(getDailyRewardPayload(updatedRow, wonderCoins, ownedStoreItemIds))
   } catch (error) {
+    try {
+      await client.query('ROLLBACK')
+    } catch {
+      /* ignore */
+    }
     console.error('Failed to claim daily reward', error)
     return res.status(500).json({ error: 'Unable to claim daily reward' })
+  } finally {
+    client.release()
+  }
+})
+
+router.post('/wonder-store/purchase', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  const userId = auth.userId
+  const itemId = String(req.body?.itemId || '').trim().toLowerCase()
+  const cost = WONDER_STORE_ITEM_COSTS[itemId]
+  if (!itemId || cost == null) {
+    return res.status(400).json({ error: 'Invalid store item' })
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    const dup = await client.query<{ n: string }>(
+      `SELECT 1 AS n FROM user_wonder_store_purchases WHERE user_id = $1 AND item_id = $2 LIMIT 1`,
+      [userId, itemId]
+    )
+    if (dup.rows.length > 0) {
+      await client.query('ROLLBACK')
+      const row = await ensureDailyRewardRow(userId)
+      if (!row) {
+        return res.status(500).json({ error: 'Unable to load rewards' })
+      }
+      const wonderCoins = await getUserWonderCoins(userId)
+      const ownedStoreItemIds = await getOwnedWonderStoreItemIds(userId)
+      return res.status(409).json({
+        error: 'Already purchased',
+        ...getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds),
+      })
+    }
+
+    const spend = await client.query<{ wonder_coins: number }>(
+      `
+        UPDATE users
+        SET wonder_coins = wonder_coins - $2, updated_at = NOW()
+        WHERE id::text = $1
+          AND wonder_coins >= $2
+        RETURNING wonder_coins
+      `,
+      [userId, cost]
+    )
+
+    if (!spend.rows[0]) {
+      await client.query('ROLLBACK')
+      const row = await ensureDailyRewardRow(userId)
+      if (!row) {
+        return res.status(500).json({ error: 'Unable to load rewards' })
+      }
+      const wonderCoins = await getUserWonderCoins(userId)
+      const ownedStoreItemIds = await getOwnedWonderStoreItemIds(userId)
+      return res.status(402).json({
+        error: 'Not enough coins',
+        ...getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds),
+      })
+    }
+
+    await client.query(
+      `
+        INSERT INTO user_wonder_store_purchases (user_id, item_id, cost_coins)
+        VALUES ($1, $2, $3)
+      `,
+      [userId, itemId, cost]
+    )
+
+    await client.query('COMMIT')
+
+    const row = await ensureDailyRewardRow(userId)
+    if (!row) {
+      return res.status(500).json({ error: 'Unable to load rewards' })
+    }
+    const wonderCoins = spend.rows[0].wonder_coins
+    const ownedStoreItemIds = await getOwnedWonderStoreItemIds(userId)
+    return res.status(200).json(getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds))
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK')
+    } catch {
+      /* ignore */
+    }
+    console.error('Failed wonder store purchase', error)
+    return res.status(500).json({ error: 'Unable to complete purchase' })
+  } finally {
+    client.release()
   }
 })
 

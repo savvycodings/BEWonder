@@ -170,6 +170,27 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_name TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_account_number TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_branch TEXT;
 
+-- Wonder coins: app-wide currency (earned via daily rewards, etc.; spent in Wonder Store). Default 0.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS wonder_coins INTEGER NOT NULL DEFAULT 0;
+
+-- One-time: copy legacy balance from daily-rewards row into users (if column existed).
+UPDATE users u
+SET wonder_coins = GREATEST(u.wonder_coins, COALESCE(d.wallet_balance, 0))
+FROM user_daily_rewards d
+WHERE d.user_id = u.id::text;
+
+-- Wonder Store purchases (deducts wonder_coins on server; prevents double-buy).
+CREATE TABLE IF NOT EXISTS user_wonder_store_purchases (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  cost_coins INTEGER NOT NULL CHECK (cost_coins > 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_wonder_store_purchases_user_id ON user_wonder_store_purchases (user_id);
+
 -- Order checkout snapshots (delivery choice, contact, customer bank for EFT matching)
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_method TEXT NOT NULL DEFAULT 'standard';
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS contact_phone TEXT;
