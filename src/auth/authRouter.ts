@@ -18,6 +18,13 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 })
 
+const ALLOWED_AVATAR_FRAMES = new Set(['none', 'neon', 'gold', 'rainbow', 'prism'])
+
+function normalizeStoredAvatarFrame(raw: string | null | undefined): string {
+  const v = String(raw ?? 'none').trim()
+  return ALLOWED_AVATAR_FRAMES.has(v) ? v : 'none'
+}
+
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
@@ -178,6 +185,7 @@ router.post('/register', async (req, res) => {
       eft_bank_name: string | null
       eft_bank_account_number: string | null
       eft_bank_branch: string | null
+      avatar_frame: string | null
     }>(
       `
         INSERT INTO users (
@@ -212,7 +220,8 @@ router.post('/register', async (req, res) => {
           eft_bank_account_name,
           eft_bank_name,
           eft_bank_account_number,
-          eft_bank_branch
+          eft_bank_branch,
+          avatar_frame
       `,
       [
         crypto.randomUUID(),
@@ -278,6 +287,7 @@ router.post('/register', async (req, res) => {
         eftBankName: user.eft_bank_name,
         eftBankAccountNumber: user.eft_bank_account_number,
         eftBankBranch: user.eft_bank_branch,
+        avatarFrameId: normalizeStoredAvatarFrame(user.avatar_frame),
         paymentMethod: null,
       },
       sessionToken,
@@ -354,6 +364,7 @@ router.post('/login', async (req, res) => {
       eft_bank_name: string | null
       eft_bank_account_number: string | null
       eft_bank_branch: string | null
+      avatar_frame: string | null
     }>(
       `
         SELECT
@@ -370,7 +381,8 @@ router.post('/login', async (req, res) => {
           eft_bank_account_name,
           eft_bank_name,
           eft_bank_account_number,
-          eft_bank_branch
+          eft_bank_branch,
+          avatar_frame
         FROM users
         WHERE id = $1
         LIMIT 1
@@ -405,6 +417,7 @@ router.post('/login', async (req, res) => {
         eftBankName: user.eft_bank_name,
         eftBankAccountNumber: user.eft_bank_account_number,
         eftBankBranch: user.eft_bank_branch,
+        avatarFrameId: normalizeStoredAvatarFrame(user.avatar_frame),
         paymentMethod: null,
       },
       sessionToken,
@@ -634,6 +647,7 @@ router.patch('/profile-details', async (req, res) => {
       eft_bank_name: string | null
       eft_bank_account_number: string | null
       eft_bank_branch: string | null
+      avatar_frame: string | null
     }>(
       `
         UPDATE users
@@ -655,7 +669,8 @@ router.patch('/profile-details', async (req, res) => {
           eft_bank_account_name,
           eft_bank_name,
           eft_bank_account_number,
-          eft_bank_branch
+          eft_bank_branch,
+          avatar_frame
       `,
       vals
     )
@@ -680,6 +695,7 @@ router.patch('/profile-details', async (req, res) => {
         eftBankName: user.eft_bank_name,
         eftBankAccountNumber: user.eft_bank_account_number,
         eftBankBranch: user.eft_bank_branch,
+        avatarFrameId: normalizeStoredAvatarFrame(user.avatar_frame),
         paymentMethod: null,
       },
     })
@@ -688,6 +704,48 @@ router.patch('/profile-details', async (req, res) => {
     return res.status(500).json({
       error: 'Unable to update profile details',
     })
+  }
+})
+
+router.patch('/avatar-frame', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  const raw = String(req.body?.avatarFrameId ?? req.body?.frameId ?? '').trim()
+  if (!ALLOWED_AVATAR_FRAMES.has(raw)) {
+    return res.status(400).json({ error: 'Invalid avatar frame' })
+  }
+
+  try {
+    const result = await runQuery<{ avatar_frame: string | null }>(
+      `
+        UPDATE users
+        SET avatar_frame = $2, updated_at = NOW()
+        WHERE id = $1
+        RETURNING avatar_frame
+      `,
+      [auth.userId, raw]
+    )
+
+    const row = result.rows[0]
+    const avatarFrameId = normalizeStoredAvatarFrame(row?.avatar_frame)
+
+    return res.status(200).json({
+      user: {
+        ...auth.user,
+        avatarFrameId,
+      },
+    })
+  } catch (error: any) {
+    if (error?.code === '42703') {
+      return res.status(503).json({
+        error: 'Avatar frames require a database update on this server.',
+      })
+    }
+    console.error('Failed to update avatar frame', error)
+    return res.status(500).json({ error: 'Unable to update avatar frame' })
   }
 })
 

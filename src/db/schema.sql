@@ -21,6 +21,9 @@ ADD COLUMN IF NOT EXISTS shipping_address TEXT;
 ALTER TABLE users
 ADD COLUMN IF NOT EXISTS payment_method TEXT;
 
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS avatar_frame TEXT DEFAULT 'none';
+
 -- user_id as TEXT: live Better Auth `users.id` is often TEXT, not UUID. No FK so this file
 -- can run against Neon without type mismatch with the legacy `users` UUID definition above.
 CREATE TABLE IF NOT EXISTS user_sessions (

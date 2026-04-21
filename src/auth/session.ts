@@ -56,6 +56,7 @@ export async function getAuthUserFromRequest(req: Request) {
     eft_bank_name: string | null
     eft_bank_account_number: string | null
     eft_bank_branch: string | null
+    avatar_frame: string | null
   }>(
     `
       SELECT
@@ -72,7 +73,8 @@ export async function getAuthUserFromRequest(req: Request) {
         u.eft_bank_account_name,
         u.eft_bank_name,
         u.eft_bank_account_number,
-        u.eft_bank_branch
+        u.eft_bank_branch,
+        u.avatar_frame
       FROM sessions s
       JOIN users u ON u.id = s.user_id
       WHERE s.id = $1
@@ -84,6 +86,16 @@ export async function getAuthUserFromRequest(req: Request) {
 
   const row = result.rows[0]
   if (!row) return null
+
+  const rawFrame = row.avatar_frame
+  const avatarFrameId =
+    rawFrame === 'neon' ||
+    rawFrame === 'gold' ||
+    rawFrame === 'rainbow' ||
+    rawFrame === 'prism' ||
+    rawFrame === 'none'
+      ? rawFrame
+      : 'none'
 
   return {
     userId: row.user_id,
@@ -102,6 +114,7 @@ export async function getAuthUserFromRequest(req: Request) {
       eftBankName: row.eft_bank_name,
       eftBankAccountNumber: row.eft_bank_account_number,
       eftBankBranch: row.eft_bank_branch,
+      avatarFrameId,
       paymentMethod: null,
     },
     token,

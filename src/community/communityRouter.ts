@@ -24,6 +24,13 @@ function sendEvent(res: Response, event: string, data: unknown) {
   res.write(`data: ${JSON.stringify(data)}\n\n`)
 }
 
+const ALLOWED_CHAT_AVATAR_FRAMES = new Set(['none', 'neon', 'gold', 'rainbow', 'prism'])
+
+function avatarFrameIdFromDb(raw: string | null | undefined): string {
+  const v = String(raw ?? 'none').trim()
+  return ALLOWED_CHAT_AVATAR_FRAMES.has(v) ? v : 'none'
+}
+
 async function fetchRecentMessages(limit: number = 100) {
   try {
     const result = await runQuery<{
@@ -34,6 +41,7 @@ async function fetchRecentMessages(limit: number = 100) {
       user_id: string
       name: string | null
       image: string | null
+      avatar_frame: string | null
     }>(
       `
         SELECT
@@ -43,7 +51,8 @@ async function fetchRecentMessages(limit: number = 100) {
           m.created_at,
           u.id as user_id,
           u.name,
-          u.image
+          u.image,
+          u.avatar_frame
         FROM community_messages m
         JOIN users u ON u.id = m.user_id
         ORDER BY m.created_at ASC
@@ -61,6 +70,7 @@ async function fetchRecentMessages(limit: number = 100) {
         id: row.user_id,
         fullName: row.name || '',
         profilePicture: row.image,
+        avatarFrameId: avatarFrameIdFromDb(row.avatar_frame),
       },
     }))
   } catch (error: any) {
@@ -144,6 +154,7 @@ router.post('/messages', async (req, res) => {
       id: auth.user.id,
       fullName: auth.user.fullName,
       profilePicture: auth.user.profilePicture ?? null,
+      avatarFrameId: avatarFrameIdFromDb(auth.user.avatarFrameId),
     },
   }
 
@@ -206,6 +217,7 @@ router.patch('/messages/:messageId', async (req, res) => {
       id: auth.user.id,
       fullName: auth.user.fullName,
       profilePicture: auth.user.profilePicture ?? null,
+      avatarFrameId: avatarFrameIdFromDb(auth.user.avatarFrameId),
     },
   }
 
