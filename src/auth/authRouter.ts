@@ -8,7 +8,12 @@ import {
   getAuthUserFromRequest,
   revokeSessionByToken,
 } from './session'
-import { getWonderJumpProgressForUser, mergeWonderJumpProgressForUser } from './wonderJumpProgress'
+import {
+  claimWonderJumpChestForUser,
+  getWonderJumpProgressForUser,
+  mergeWonderJumpProgressForUser,
+  pickupWonderJumpChestForUser,
+} from './wonderJumpProgress'
 
 const router = express.Router()
 const DAILY_REWARD_AMOUNTS = [1, 2, 3, 4, 5, 6, 7]
@@ -720,6 +725,56 @@ router.put('/wonder-jump-progress', async (req, res) => {
     }
     console.error('Failed to save WonderJump progress', error)
     return res.status(500).json({ error: 'Unable to save WonderJump progress' })
+  }
+})
+
+router.post('/wonder-jump-chest/pickup', async (_req, res) => {
+  const auth = await getAuthUserFromRequest(_req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  try {
+    const data = await pickupWonderJumpChestForUser(auth.userId)
+    return res.status(200).json(data)
+  } catch (error: any) {
+    if (error?.code === '42P01' || error?.code === '42703') {
+      return res.status(503).json({
+        error: 'WonderJump chest is not available yet',
+        detail: 'Run pnpm db:migrate (wonder_jump_chest_unlocks_at column).',
+      })
+    }
+    console.error('Failed to record WonderJump chest pickup', error)
+    return res.status(500).json({ error: 'Unable to record chest pickup' })
+  }
+})
+
+router.post('/wonder-jump-chest/claim', async (_req, res) => {
+  const auth = await getAuthUserFromRequest(_req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  try {
+    const result = await claimWonderJumpChestForUser(auth.userId)
+    if (!result.ok) {
+      const body: Record<string, unknown> = { error: result.message }
+      if (result.chestUnlocksAt != null) body.chestUnlocksAt = result.chestUnlocksAt
+      if (result.msRemaining != null) body.msRemaining = result.msRemaining
+      return res.status(result.status).json(body)
+    }
+    return res.status(200).json({
+      ok: true,
+      wonderCoins: result.wonderCoins,
+      chestUnlocksAt: null,
+    })
+  } catch (error: any) {
+    if (error?.code === '42P01' || error?.code === '42703') {
+      return res.status(503).json({
+        error: 'WonderJump chest is not available yet',
+        detail: 'Run pnpm db:migrate (wonder_jump_chest_unlocks_at column).',
+      })
+    }
+    console.error('Failed to claim WonderJump chest', error)
+    return res.status(500).json({ error: 'Unable to claim chest' })
   }
 })
 
