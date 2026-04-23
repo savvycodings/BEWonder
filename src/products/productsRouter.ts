@@ -13,6 +13,24 @@ function toMoney(amount: any, currencyCode: any): Money | null {
   }
 }
 
+function resolvePackagePrices(
+  minAmount: any,
+  minCurrency: string | null,
+  maxAmount: any,
+  maxCurrency: string | null,
+) {
+  const single = toMoney(minAmount, minCurrency)
+  const set = toMoney(maxAmount, maxCurrency || minCurrency)
+  const minNum = Number.parseFloat(String(minAmount))
+  const maxNum = Number.parseFloat(String(maxAmount))
+  const hasDistinctSetPrice =
+    Number.isFinite(minNum) && Number.isFinite(maxNum) && maxNum > minNum
+  return {
+    single,
+    set: hasDistinctSetPrice ? set : null,
+  }
+}
+
 router.get('/products', async (req, res) => {
   const first = Math.max(1, Math.min(50, Number(req.query.first || 20)))
   const q = String(req.query.q || req.query.query || '').trim()
@@ -30,9 +48,12 @@ router.get('/products', async (req, res) => {
       p.product_type,
       p.thumbnail_url,
       p.images,
-      v.price as variant_price,
-      v.compare_at_price as variant_compare_at_price,
-      v.currency_code as variant_currency_code
+      v_min.price as variant_price,
+      v_min.compare_at_price as variant_compare_at_price,
+      v_min.currency_code as variant_currency_code,
+      v_max.price as variant_set_price,
+      v_max.compare_at_price as variant_set_compare_at_price,
+      v_max.currency_code as variant_set_currency_code
     FROM products p
     LEFT JOIN LATERAL (
       SELECT price, compare_at_price, currency_code
@@ -40,7 +61,14 @@ router.get('/products', async (req, res) => {
       WHERE product_id = p.id
       ORDER BY price ASC NULLS LAST
       LIMIT 1
-    ) v ON true
+    ) v_min ON true
+    LEFT JOIN LATERAL (
+      SELECT price, compare_at_price, currency_code
+      FROM product_variants
+      WHERE product_id = p.id
+      ORDER BY price DESC NULLS LAST
+      LIMIT 1
+    ) v_max ON true
     ${whereClause}
     ORDER BY p.updated_at DESC NULLS LAST
     LIMIT $1
@@ -58,6 +86,9 @@ router.get('/products', async (req, res) => {
     variant_price: any
     variant_compare_at_price: any
     variant_currency_code: string | null
+    variant_set_price: any
+    variant_set_compare_at_price: any
+    variant_set_currency_code: string | null
   }>(sql, values)
 
   const products = result.rows.map((row) => {
@@ -75,6 +106,12 @@ router.get('/products', async (req, res) => {
       images,
       price: toMoney(row.variant_price, row.variant_currency_code),
       compareAtPrice: toMoney(row.variant_compare_at_price, row.variant_currency_code),
+      packagePrices: resolvePackagePrices(
+        row.variant_price,
+        row.variant_currency_code,
+        row.variant_set_price,
+        row.variant_set_currency_code,
+      ),
     }
   })
 
@@ -97,6 +134,9 @@ router.get('/products/:handle', async (req, res) => {
     variant_price: any
     variant_compare_at_price: any
     variant_currency_code: string | null
+    variant_set_price: any
+    variant_set_compare_at_price: any
+    variant_set_currency_code: string | null
   }>(
     `
       SELECT
@@ -108,9 +148,12 @@ router.get('/products/:handle', async (req, res) => {
         p.product_type,
         p.thumbnail_url,
         p.images,
-        v.price as variant_price,
-        v.compare_at_price as variant_compare_at_price,
-        v.currency_code as variant_currency_code
+        v_min.price as variant_price,
+        v_min.compare_at_price as variant_compare_at_price,
+        v_min.currency_code as variant_currency_code,
+        v_max.price as variant_set_price,
+        v_max.compare_at_price as variant_set_compare_at_price,
+        v_max.currency_code as variant_set_currency_code
       FROM products p
       LEFT JOIN LATERAL (
         SELECT price, compare_at_price, currency_code
@@ -118,7 +161,14 @@ router.get('/products/:handle', async (req, res) => {
         WHERE product_id = p.id
         ORDER BY price ASC NULLS LAST
         LIMIT 1
-      ) v ON true
+      ) v_min ON true
+      LEFT JOIN LATERAL (
+        SELECT price, compare_at_price, currency_code
+        FROM product_variants
+        WHERE product_id = p.id
+        ORDER BY price DESC NULLS LAST
+        LIMIT 1
+      ) v_max ON true
       WHERE p.handle = $1
       LIMIT 1
     `,
@@ -143,6 +193,12 @@ router.get('/products/:handle', async (req, res) => {
       images,
       price: toMoney(row.variant_price, row.variant_currency_code),
       compareAtPrice: toMoney(row.variant_compare_at_price, row.variant_currency_code),
+      packagePrices: resolvePackagePrices(
+        row.variant_price,
+        row.variant_currency_code,
+        row.variant_set_price,
+        row.variant_set_currency_code,
+      ),
     },
   })
 })

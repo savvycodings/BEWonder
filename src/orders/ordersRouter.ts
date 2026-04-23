@@ -12,7 +12,7 @@ const router = express.Router()
 const SHIPPING_PUDO_CENTS_ZAR = 7000
 const SHIPPING_STANDARD_CENTS_ZAR = 15000
 
-type LineInput = { productId: string; quantity: number }
+type LineInput = { productId: string; quantity: number; packaging?: 'single' | 'set' }
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
@@ -27,9 +27,13 @@ type ProductRow = {
   variant_currency_code: string | null
 }
 
-async function loadProductForOrder(productId: string): Promise<ProductRow | null> {
+async function loadProductForOrder(
+  productId: string,
+  packaging: 'single' | 'set' = 'single',
+): Promise<ProductRow | null> {
   const idNum = Number(productId)
   if (!Number.isFinite(idNum)) return null
+  const orderDirection = packaging === 'set' ? 'DESC' : 'ASC'
   const result = await runQuery<ProductRow>(
     `
       SELECT
@@ -44,7 +48,7 @@ async function loadProductForOrder(productId: string): Promise<ProductRow | null
         SELECT price, currency_code
         FROM product_variants
         WHERE product_id = p.id
-        ORDER BY price ASC NULLS LAST
+        ORDER BY price ${orderDirection} NULLS LAST
         LIMIT 1
       ) v ON true
       WHERE p.id = $1
@@ -102,7 +106,8 @@ router.post('/', async (req, res) => {
   let currency = ''
   for (const raw of items) {
     const qty = Math.max(1, Math.min(99, Math.floor(Number(raw.quantity) || 0)))
-    const row = await loadProductForOrder(String(raw.productId))
+    const packaging = raw.packaging === 'set' ? 'set' : 'single'
+    const row = await loadProductForOrder(String(raw.productId), packaging)
     if (!row) {
       return res.status(400).json({ error: `Unknown product: ${raw.productId}` })
     }
