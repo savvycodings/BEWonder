@@ -54,6 +54,21 @@ function normalizeStoredAvatarFrame(raw: string | null | undefined): string {
   return ALLOWED_AVATAR_FRAMES.has(v) ? v : 'none'
 }
 
+type HeroBadgeSlots = [string | null, string | null, string | null]
+
+function normalizeProfileBadgeSlots(raw: unknown): HeroBadgeSlots {
+  if (!Array.isArray(raw)) return [null, null, null]
+  const next = raw.slice(0, 3).map((v) => (typeof v === 'string' && v.trim() ? v.trim() : null))
+  while (next.length < 3) next.push(null)
+  return [next[0], next[1], next[2]] as HeroBadgeSlots
+}
+
+function normalizeProfileBannerUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const v = raw.trim()
+  return v ? v : null
+}
+
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
@@ -1137,6 +1152,185 @@ router.patch('/avatar-frame', async (req, res) => {
     }
     console.error('Failed to update avatar frame', error)
     return res.status(500).json({ error: 'Unable to update avatar frame' })
+  }
+})
+
+router.get('/profile-hero', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  try {
+    const result = await runQuery<{ profile_banner_url: string | null; profile_badge_slots: unknown }>(
+      `
+        SELECT profile_banner_url, profile_badge_slots
+        FROM users
+        WHERE id::text = $1
+        LIMIT 1
+      `,
+      [auth.userId]
+    )
+    const row = result.rows[0]
+    if (!row) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+    return res.status(200).json({
+      bannerUrl: normalizeProfileBannerUrl(row.profile_banner_url),
+      badgeSlots: normalizeProfileBadgeSlots(row.profile_badge_slots),
+    })
+  } catch (error: any) {
+    if (error?.code === '42703') {
+      return res.status(503).json({
+        error: 'Profile hero fields need a database update on this server.',
+      })
+    }
+    console.error('Failed to load profile hero', error)
+    return res.status(500).json({ error: 'Unable to load profile hero' })
+  }
+})
+
+router.patch('/profile-hero', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  const bannerUrl =
+    req.body?.bannerUrl === undefined ? undefined : normalizeProfileBannerUrl(String(req.body?.bannerUrl ?? ''))
+  const badgeSlots =
+    req.body?.badgeSlots === undefined ? undefined : normalizeProfileBadgeSlots(req.body?.badgeSlots)
+
+  if (bannerUrl === undefined && badgeSlots === undefined) {
+    return res.status(400).json({ error: 'No supported profile hero fields to update' })
+  }
+
+  const sets: string[] = []
+  const vals: unknown[] = [auth.userId]
+  let i = 2
+  if (bannerUrl !== undefined) {
+    sets.push(`profile_banner_url = $${i}`)
+    vals.push(bannerUrl)
+    i += 1
+  }
+  if (badgeSlots !== undefined) {
+    sets.push(`profile_badge_slots = $${i}::jsonb`)
+    vals.push(JSON.stringify(badgeSlots))
+    i += 1
+  }
+
+  try {
+    const result = await runQuery<{ profile_banner_url: string | null; profile_badge_slots: unknown }>(
+      `
+        UPDATE users
+        SET ${sets.join(', ')}, updated_at = NOW()
+        WHERE id::text = $1
+        RETURNING profile_banner_url, profile_badge_slots
+      `,
+      vals
+    )
+    const row = result.rows[0]
+    if (!row) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+    return res.status(200).json({
+      bannerUrl: normalizeProfileBannerUrl(row.profile_banner_url),
+      badgeSlots: normalizeProfileBadgeSlots(row.profile_badge_slots),
+    })
+  } catch (error: any) {
+    if (error?.code === '42703') {
+      return res.status(503).json({
+        error: 'Profile hero fields need a database update on this server.',
+      })
+    }
+    console.error('Failed to update profile hero', error)
+    return res.status(500).json({ error: 'Unable to update profile hero' })
+  }
+})
+
+router.post('/profile-banner', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  const imageBase64 = String(req.body?.imageBase64 || '').trim()
+  const mimeType = String(req.body?.mimeType || 'image/jpeg').trim()
+  if (!imageBase64) {
+    return res.status(400).json({ error: 'imageBase64 is required' })
+  }
+  if (
+    !process.env.CLOUDINARY_CLOUD_NAME ||
+    !process.env.CLOUDINARY_API_KEY ||
+    !process.env.CLOUDINARY_API_SECRET
+  ) {
+    return res.status(500).json({
+      error: 'Cloudinary environment variables are not configured',
+    })
+  }
+  try {
+    const uploadResult = await cloudinary.uploader.upload(
+      `data:${mimeType};base64,${imageBase64}`,
+      {
+        folder: 'wonderport/profile-banners',
+        public_id: `banner-${auth.userId}-${Date.now()}`,
+        resource_type: 'image',
+        overwrite: true,
+      }
+    )
+    const bannerUrl = String(uploadResult.secure_url || '').trim()
+    await runQuery(
+      `
+        UPDATE users
+        SET profile_banner_url = $2, updated_at = NOW()
+        WHERE id::text = $1
+      `,
+      [auth.userId, bannerUrl || null]
+    )
+    return res.status(200).json({ bannerUrl: bannerUrl || null })
+  } catch (error) {
+    console.error('Failed to upload profile banner', error)
+    return res.status(500).json({ error: 'Unable to upload profile banner' })
+  }
+})
+
+router.get('/community/users/:userId/public', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  const userId = String(req.params.userId || '').trim()
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required' })
+  }
+  try {
+    const result = await runQuery<{
+      profile_banner_url: string | null
+      profile_badge_slots: unknown
+    }>(
+      `
+        SELECT profile_banner_url, profile_badge_slots
+        FROM users
+        WHERE id::text = $1
+        LIMIT 1
+      `,
+      [userId]
+    )
+    const row = result.rows[0]
+    if (!row) return res.status(404).json({ error: 'User not found' })
+    return res.status(200).json({
+      bannerUrl: normalizeProfileBannerUrl(row.profile_banner_url),
+      badgeSlots: normalizeProfileBadgeSlots(row.profile_badge_slots),
+      bio: null,
+      tagline: null,
+    })
+  } catch (error: any) {
+    if (error?.code === '42703') {
+      return res.status(503).json({
+        error: 'Community profile fields need a database update on this server.',
+      })
+    }
+    console.error('Failed to load public community profile', error)
+    return res.status(500).json({ error: 'Unable to load profile' })
   }
 })
 

@@ -264,6 +264,75 @@ router.delete('/messages/:messageId', async (req, res) => {
   return res.status(200).json({ ok: true })
 })
 
+router.post('/messages/:messageId/report', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  const messageId = String(req.params.messageId || '').trim()
+  const reason = String(req.body?.reason || '').trim()
+  if (!messageId) {
+    return res.status(400).json({ error: 'Message id is required' })
+  }
+
+  try {
+    const msg = await runQuery<{ id: string; user_id: string }>(
+      `
+        SELECT id, user_id
+        FROM community_messages
+        WHERE id = $1::uuid
+        LIMIT 1
+      `,
+      [messageId]
+    )
+    const row = msg.rows[0]
+    if (!row) {
+      return res.status(404).json({ error: 'Message not found' })
+    }
+
+    const existing = await runQuery<{ id: string }>(
+      `
+        SELECT id
+        FROM community_message_reports
+        WHERE message_id = $1::uuid
+          AND reported_by_user_id = $2
+          AND status = 'open'
+        LIMIT 1
+      `,
+      [messageId, auth.userId]
+    )
+    if (existing.rows[0]) {
+      return res.status(200).json({ ok: true, duplicate: true })
+    }
+
+    await runQuery(
+      `
+        INSERT INTO community_message_reports (
+          id,
+          message_id,
+          reported_by_user_id,
+          reported_user_id,
+          reason,
+          status,
+          created_at
+        )
+        VALUES ($1::uuid, $2::uuid, $3, $4, $5, 'open', NOW())
+      `,
+      [crypto.randomUUID(), messageId, auth.userId, row.user_id, reason || null]
+    )
+
+    return res.status(201).json({ ok: true })
+  } catch (error: any) {
+    if (error?.code === '42P01') {
+      return res.status(501).json({
+        error: 'Community reporting is not enabled on this database yet.',
+      })
+    }
+    throw error
+  }
+})
+
 router.get('/stream', async (req, res) => {
   const auth = await getAuthUserFromRequest(req)
   if (!auth) {

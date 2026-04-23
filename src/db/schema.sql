@@ -43,6 +43,18 @@ CREATE TABLE IF NOT EXISTS community_messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS community_message_reports (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  message_id UUID NOT NULL,
+  reported_by_user_id TEXT NOT NULL,
+  reported_user_id TEXT NOT NULL,
+  reason TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at TIMESTAMPTZ,
+  resolved_by_admin TEXT
+);
+
 ALTER TABLE community_messages
 ADD COLUMN IF NOT EXISTS image_url TEXT;
 
@@ -83,6 +95,8 @@ CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions (user_id);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions (token_hash);
 CREATE INDEX IF NOT EXISTS idx_community_messages_created_at ON community_messages (created_at);
+CREATE INDEX IF NOT EXISTS idx_community_message_reports_created_at ON community_message_reports (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_community_message_reports_status ON community_message_reports (status);
 CREATE INDEX IF NOT EXISTS idx_user_daily_rewards_last_claimed_at ON user_daily_rewards (last_claimed_at);
 
 -- Orders (Wonderport checkout). user_id is TEXT to match Better Auth `users.id` in production.
@@ -182,6 +196,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_account_name TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_name TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_account_number TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_branch TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_banner_url TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_badge_slots JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 -- Wonder coins: app-wide currency (earned via daily rewards, etc.; spent in Wonder Store). Default 0.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS wonder_coins INTEGER NOT NULL DEFAULT 0;

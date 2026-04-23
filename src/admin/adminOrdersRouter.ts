@@ -588,4 +588,170 @@ router.post('/orders/:orderId/book-courier', requireAdmin, async (req, res) => {
   })
 })
 
+router.get('/community/reports', requireAdmin, async (req, res) => {
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100))
+  const status = String(req.query.status || 'open').trim().toLowerCase()
+  const useAll = status === 'all'
+
+  const params: unknown[] = [limit]
+  const where = useAll ? '' : `WHERE r.status = $2`
+  if (!useAll) params.push(status === 'resolved' ? 'resolved' : 'open')
+
+  try {
+    const result = await runQuery<{
+      id: string
+      message_id: string
+      reported_by_user_id: string
+      reported_user_id: string
+      reason: string | null
+      status: string
+      created_at: string
+      resolved_at: string | null
+      body: string | null
+      image_url: string | null
+      reporter_name: string | null
+      reporter_email: string | null
+      reported_name: string | null
+      reported_email: string | null
+    }>(
+      `
+        SELECT
+          r.id,
+          r.message_id,
+          r.reported_by_user_id,
+          r.reported_user_id,
+          r.reason,
+          r.status,
+          r.created_at,
+          r.resolved_at,
+          m.body,
+          m.image_url,
+          ru.name AS reporter_name,
+          ru.email AS reporter_email,
+          tu.name AS reported_name,
+          tu.email AS reported_email
+        FROM community_message_reports r
+        LEFT JOIN community_messages m ON m.id = r.message_id
+        LEFT JOIN users ru ON ru.id = r.reported_by_user_id
+        LEFT JOIN users tu ON tu.id = r.reported_user_id
+        ${where}
+        ORDER BY r.created_at DESC
+        LIMIT $1
+      `,
+      params
+    )
+
+    return res.status(200).json({
+      reports: result.rows.map((r) => ({
+        id: r.id,
+        messageId: r.message_id,
+        reportedByUserId: r.reported_by_user_id,
+        reportedUserId: r.reported_user_id,
+        reason: r.reason,
+        status: r.status,
+        createdAt: r.created_at,
+        resolvedAt: r.resolved_at,
+        messageBody: r.body || '',
+        messageImageUrl: r.image_url || null,
+        messageMissing: r.body == null && r.image_url == null,
+        reporterName: r.reporter_name,
+        reporterEmail: r.reporter_email,
+        reportedName: r.reported_name,
+        reportedEmail: r.reported_email,
+      })),
+    })
+  } catch (error: any) {
+    if (error?.code === '42P01') {
+      return res.status(501).json({
+        error: 'Community reports are not enabled on this database yet.',
+      })
+    }
+    throw error
+  }
+})
+
+router.post('/community/reports/:reportId/dismiss', requireAdmin, async (req, res) => {
+  const reportId = String(req.params.reportId || '').trim()
+  if (!reportId) return res.status(400).json({ error: 'reportId required' })
+
+  try {
+    await runQuery(
+      `
+        UPDATE community_message_reports
+        SET status = 'resolved', resolved_at = NOW(), resolved_by_admin = 'admin'
+        WHERE id = $1::uuid
+      `,
+      [reportId]
+    )
+    return res.status(200).json({ ok: true })
+  } catch (error: any) {
+    if (error?.code === '42P01') {
+      return res.status(501).json({
+        error: 'Community reports are not enabled on this database yet.',
+      })
+    }
+    throw error
+  }
+})
+
+router.post('/community/reports/:reportId/delete-message', requireAdmin, async (req, res) => {
+  const reportId = String(req.params.reportId || '').trim()
+  if (!reportId) return res.status(400).json({ error: 'reportId required' })
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const reportRes = await client.query<{ id: string; message_id: string }>(
+      `
+        SELECT id, message_id
+        FROM community_message_reports
+        WHERE id = $1::uuid
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [reportId]
+    )
+    const report = reportRes.rows[0]
+    if (!report) {
+      await client.query('ROLLBACK')
+      return res.status(404).json({ error: 'Report not found' })
+    }
+
+    const deleted = await client.query<{ id: string }>(
+      `
+        DELETE FROM community_messages
+        WHERE id = $1::uuid
+        RETURNING id
+      `,
+      [report.message_id]
+    )
+
+    await client.query(
+      `
+        UPDATE community_message_reports
+        SET status = 'resolved', resolved_at = NOW(), resolved_by_admin = 'admin'
+        WHERE id = $1::uuid
+      `,
+      [reportId]
+    )
+
+    await client.query('COMMIT')
+    return res.status(200).json({ ok: true, deleted: Boolean(deleted.rows[0]) })
+  } catch (error: any) {
+    try {
+      await client.query('ROLLBACK')
+    } catch {
+      /* ignore */
+    }
+    if (error?.code === '42P01') {
+      return res.status(501).json({
+        error: 'Community reports are not enabled on this database yet.',
+      })
+    }
+    throw error
+  } finally {
+    client.release()
+  }
+})
+
 export default router
