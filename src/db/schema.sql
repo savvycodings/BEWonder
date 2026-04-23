@@ -225,3 +225,15 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS pudo_locker_address TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_eft_account_name TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_eft_bank_name TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_eft_account_number TEXT;
+
+-- WonderJump per-user progress (display score + unlocked biomes). user_id TEXT matches sessions/users.id.
+-- No FK: mixed UUID/TEXT user ids across environments (see orders / user_daily_rewards).
+CREATE TABLE IF NOT EXISTS user_wonder_jump_progress (
+  user_id TEXT PRIMARY KEY,
+  high_score INTEGER NOT NULL DEFAULT 0 CHECK (high_score >= 0),
+  unlocked_biomes JSONB NOT NULL DEFAULT '["grassland","mushroom","tropical"]'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_wonder_jump_progress_updated_at
+  ON user_wonder_jump_progress (updated_at DESC);

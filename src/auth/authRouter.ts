@@ -8,6 +8,7 @@ import {
   getAuthUserFromRequest,
   revokeSessionByToken,
 } from './session'
+import { getWonderJumpProgressForUser, mergeWonderJumpProgressForUser } from './wonderJumpProgress'
 
 const router = express.Router()
 const DAILY_REWARD_AMOUNTS = [1, 2, 3, 4, 5, 6, 7]
@@ -679,6 +680,46 @@ router.post('/daily-rewards/claim', async (req, res) => {
     return res.status(500).json({ error: 'Unable to claim daily reward' })
   } finally {
     client.release()
+  }
+})
+
+router.get('/wonder-jump-progress', async (_req, res) => {
+  const auth = await getAuthUserFromRequest(_req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  try {
+    const data = await getWonderJumpProgressForUser(auth.userId)
+    return res.status(200).json(data)
+  } catch (error: any) {
+    if (error?.code === '42P01') {
+      return res.status(503).json({
+        error: 'WonderJump progress is not available yet',
+        detail: 'Run pnpm db:migrate so user_wonder_jump_progress exists.',
+      })
+    }
+    console.error('Failed to load WonderJump progress', error)
+    return res.status(500).json({ error: 'Unable to load WonderJump progress' })
+  }
+})
+
+router.put('/wonder-jump-progress', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  try {
+    const data = await mergeWonderJumpProgressForUser(auth.userId, req.body || {})
+    return res.status(200).json(data)
+  } catch (error: any) {
+    if (error?.code === '42P01') {
+      return res.status(503).json({
+        error: 'WonderJump progress is not available yet',
+        detail: 'Run pnpm db:migrate so user_wonder_jump_progress exists.',
+      })
+    }
+    console.error('Failed to save WonderJump progress', error)
+    return res.status(500).json({ error: 'Unable to save WonderJump progress' })
   }
 })
 
