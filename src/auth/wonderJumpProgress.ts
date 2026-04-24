@@ -89,6 +89,44 @@ function mergeBiomes(existing: string[], incoming: string[]): string[] {
   return Array.from(new Set([...existing, ...incoming].filter((b) => ALLOWED_BIOMES.has(b))))
 }
 
+export type WonderJumpLeaderboardRow = {
+  userId: string
+  username: string
+  score: number
+}
+
+/** Public leaderboard: display scores from `user_wonder_jump_progress` with readable names from `users`. */
+export async function getWonderJumpLeaderboard(limit: number): Promise<WonderJumpLeaderboardRow[]> {
+  const safeLimit = Math.min(100, Math.max(1, Math.floor(limit)))
+  const result = await runQuery<{
+    user_id: string
+    score: number
+    username: string
+  }>(
+    `
+      SELECT
+        p.user_id,
+        p.high_score AS score,
+        COALESCE(
+          NULLIF(TRIM(u.name), ''),
+          SPLIT_PART(COALESCE(u.email, ''), '@', 1),
+          'Player'
+        ) AS username
+      FROM user_wonder_jump_progress p
+      LEFT JOIN users u ON u.id::text = p.user_id
+      WHERE p.high_score > 0
+      ORDER BY p.high_score DESC, p.updated_at ASC
+      LIMIT $1
+    `,
+    [safeLimit]
+  )
+  return result.rows.map((row) => ({
+    userId: row.user_id,
+    username: row.username || 'Player',
+    score: row.score,
+  }))
+}
+
 export async function mergeWonderJumpProgressForUser(
   userId: string,
   body: { highScore?: unknown; unlockedBiomes?: unknown }

@@ -254,6 +254,9 @@ CREATE TABLE IF NOT EXISTS user_wonder_jump_progress (
 CREATE INDEX IF NOT EXISTS idx_user_wonder_jump_progress_updated_at
   ON user_wonder_jump_progress (updated_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_user_wonder_jump_progress_high_score
+  ON user_wonder_jump_progress (high_score DESC);
+
 -- WonderJump tropical chest: set when picked up (opens after interval); NULL = no pending chest.
 ALTER TABLE user_wonder_jump_progress
 ADD COLUMN IF NOT EXISTS wonder_jump_chest_unlocks_at TIMESTAMPTZ;

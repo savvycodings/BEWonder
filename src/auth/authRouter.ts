@@ -10,6 +10,7 @@ import {
 } from './session'
 import {
   claimWonderJumpChestForUser,
+  getWonderJumpLeaderboard,
   getWonderJumpProgressForUser,
   mergeWonderJumpProgressForUser,
   pickupWonderJumpChestForUser,
@@ -700,6 +701,22 @@ router.post('/daily-rewards/claim', async (req, res) => {
     return res.status(500).json({ error: 'Unable to claim daily reward' })
   } finally {
     client.release()
+  }
+})
+
+/** Public: anyone can view WonderJump high scores (no session required). */
+router.get('/wonder-jump-leaderboard', async (req, res) => {
+  const raw = Number(req.query.limit)
+  const limit = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 50
+  try {
+    const entries = await getWonderJumpLeaderboard(limit)
+    return res.status(200).json({ entries })
+  } catch (error: any) {
+    if (error?.code === '42P01' || error?.code === '42703') {
+      return res.status(200).json({ entries: [], degraded: true as const })
+    }
+    console.error('Failed to load WonderJump leaderboard', error)
+    return res.status(500).json({ error: 'Unable to load leaderboard', entries: [] })
   }
 })
 
