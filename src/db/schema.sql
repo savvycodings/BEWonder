@@ -260,3 +260,9 @@ CREATE INDEX IF NOT EXISTS idx_user_wonder_jump_progress_high_score
 -- WonderJump tropical chest: set when picked up (opens after interval); NULL = no pending chest.
 ALTER TABLE user_wonder_jump_progress
 ADD COLUMN IF NOT EXISTS wonder_jump_chest_unlocks_at TIMESTAMPTZ;
+
+-- Avatar frames: keep DB values aligned with app + server allowlist (see server/src/constants/avatarFrames.ts).
+UPDATE users
+SET avatar_frame = 'none'
+WHERE avatar_frame IS NOT NULL
+  AND avatar_frame NOT IN ('none', 'neon', 'gold', 'rainbow', 'prism', 'meridian', 'hex', 'shard');

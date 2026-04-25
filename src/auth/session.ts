@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import { Request } from 'express'
 import { runQuery } from '../db/client'
+import { ALLOWED_AVATAR_FRAMES } from '../constants/avatarFrames'
 
 const SESSION_TTL_DAYS = 30
 
@@ -88,14 +89,8 @@ export async function getAuthUserFromRequest(req: Request) {
   if (!row) return null
 
   const rawFrame = row.avatar_frame
-  const avatarFrameId =
-    rawFrame === 'neon' ||
-    rawFrame === 'gold' ||
-    rawFrame === 'rainbow' ||
-    rawFrame === 'prism' ||
-    rawFrame === 'none'
-      ? rawFrame
-      : 'none'
+  const v = String(rawFrame ?? 'none').trim()
+  const avatarFrameId = ALLOWED_AVATAR_FRAMES.has(v) ? v : 'none'
 
   return {
     userId: row.user_id,

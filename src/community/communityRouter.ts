@@ -2,6 +2,7 @@ import express from 'express'
 import { Response } from 'express'
 import { runQuery } from '../db/client'
 import { getAuthUserFromRequest } from '../auth/session'
+import { ALLOWED_AVATAR_FRAMES } from '../constants/avatarFrames'
 import { v2 as cloudinary } from 'cloudinary'
 import crypto from 'crypto'
 
@@ -24,11 +25,9 @@ function sendEvent(res: Response, event: string, data: unknown) {
   res.write(`data: ${JSON.stringify(data)}\n\n`)
 }
 
-const ALLOWED_CHAT_AVATAR_FRAMES = new Set(['none', 'neon', 'gold', 'rainbow', 'prism'])
-
 function avatarFrameIdFromDb(raw: string | null | undefined): string {
   const v = String(raw ?? 'none').trim()
-  return ALLOWED_CHAT_AVATAR_FRAMES.has(v) ? v : 'none'
+  return ALLOWED_AVATAR_FRAMES.has(v) ? v : 'none'
 }
 
 async function fetchRecentMessages(limit: number = 100) {

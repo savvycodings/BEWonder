@@ -15,6 +15,7 @@ import {
   mergeWonderJumpProgressForUser,
   pickupWonderJumpChestForUser,
 } from './wonderJumpProgress'
+import { ALLOWED_AVATAR_FRAMES, normalizeStoredAvatarFrameId } from '../constants/avatarFrames'
 
 const router = express.Router()
 const DAILY_REWARD_AMOUNTS = [1, 2, 3, 4, 5, 6, 7]
@@ -48,11 +49,8 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 })
 
-const ALLOWED_AVATAR_FRAMES = new Set(['none', 'neon', 'gold', 'rainbow', 'prism'])
-
 function normalizeStoredAvatarFrame(raw: string | null | undefined): string {
-  const v = String(raw ?? 'none').trim()
-  return ALLOWED_AVATAR_FRAMES.has(v) ? v : 'none'
+  return normalizeStoredAvatarFrameId(raw)
 }
 
 type HeroBadgeSlots = [string | null, string | null, string | null]
