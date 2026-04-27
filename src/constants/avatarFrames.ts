@@ -1,4 +1,4 @@
-/** Avatar frame ids stored on `users.avatar_frame` and returned by auth / chat. */
+/** Avatar frame ids stored on `usders.avatar_frame` and returned by auth / chat. */
 export const ALLOWED_AVATAR_FRAME_IDS = [
   'none',
   'neon',
