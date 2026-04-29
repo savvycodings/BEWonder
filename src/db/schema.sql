@@ -94,6 +94,30 @@ ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE user_daily_rewards
 ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
+ALTER TABLE user_daily_rewards
+ADD COLUMN IF NOT EXISTS login_streak_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE user_daily_rewards
+ADD COLUMN IF NOT EXISTS login_streak_last_calendar_date DATE NULL;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'user_daily_rewards'
+      AND column_name = 'login_streak_last_utc_date'
+  ) THEN
+    UPDATE user_daily_rewards
+    SET login_streak_last_calendar_date = COALESCE(
+      login_streak_last_calendar_date,
+      login_streak_last_utc_date
+    )
+    WHERE login_streak_last_utc_date IS NOT NULL;
+    ALTER TABLE user_daily_rewards DROP COLUMN login_streak_last_utc_date;
+  END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions (user_id);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions (token_hash);

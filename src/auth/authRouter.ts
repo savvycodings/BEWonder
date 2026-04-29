@@ -16,12 +16,17 @@ import {
   pickupWonderJumpChestForUser,
 } from './wonderJumpProgress'
 import { ALLOWED_AVATAR_FRAMES, normalizeStoredAvatarFrameId } from '../constants/avatarFrames'
+import { normalizeLegacyWonderBadgeId, WONDER_PROFILE_BADGE_IDS } from '../constants/wonderBadges'
+import { runLoginStreakBump } from './dailyRewardsStreak'
+import {
+  fetchLocalDailyRewardSchedule,
+  getClientTimeZoneFromRequest,
+} from './dailyRewardsLocalSchedule'
 
 const router = express.Router()
 const DAILY_REWARD_AMOUNTS = [1, 2, 3, 4, 5, 6, 7]
-const DAILY_REWARD_INTERVAL_MS = 24 * 60 * 60 * 1000
 
-/** Wonder Store item ids → cdost in wonder coins (server is source of truth). */
+/** Wonder Store item ids → cost in wonder coins (server is source of truth). */
 const WONDER_STORE_ITEM_COSTS: Record<string, number> = {
   midnight: 6,
   sunset: 7,
@@ -29,6 +34,14 @@ const WONDER_STORE_ITEM_COSTS: Record<string, number> = {
   royal: 8,
   peach: 4,
   forest: 6,
+  avatar_frame_neon: 5,
+  avatar_frame_gold: 5,
+  avatar_frame_rainbow: 5,
+  avatar_frame_prism: 7,
+  avatar_frame_meridian: 7,
+  avatar_frame_hex: 12,
+  avatar_frame_shard: 12,
+  wonderjump_character_ghost: 10,
 }
 
 /** Normalized code key → wonder coins awarded (extend as you add codes). */
@@ -108,6 +121,8 @@ function verifyPassword(password: string, storedHash: string) {
 type DailyRewardRow = {
   claimed_count: number
   last_claimed_at: string
+  login_streak_count: number
+  login_streak_last_calendar_date: string | null
 }
 
 async function ensureDailyRewardRowTx(client: PoolClient, userId: string) {
@@ -122,7 +137,11 @@ async function ensureDailyRewardRowTx(client: PoolClient, userId: string) {
 
   const rowResult = await client.query<DailyRewardRow>(
     `
-      SELECT claimed_count, last_claimed_at
+      SELECT
+        claimed_count,
+        last_claimed_at,
+        COALESCE(login_streak_count, 0)::int AS login_streak_count,
+        login_streak_last_calendar_date::text AS login_streak_last_calendar_date
       FROM user_daily_rewards
       WHERE user_id = $1
       LIMIT 1
@@ -131,6 +150,37 @@ async function ensureDailyRewardRowTx(client: PoolClient, userId: string) {
   )
 
   return rowResult.rows[0]
+}
+
+async function getPaidOrderCount(userId: string): Promise<number> {
+  try {
+    const r = await runQuery<{ c: string }>(
+      `
+        SELECT COUNT(*)::text AS c
+        FROM orders
+        WHERE user_id = $1 AND status = 'paid'
+      `,
+      [userId]
+    )
+    const raw = r.rows[0]?.c
+    const n = raw != null ? parseInt(String(raw), 10) : 0
+    return Number.isFinite(n) && n >= 0 ? n : 0
+  } catch (e: any) {
+    if (e?.code === '42P01') return 0
+    throw e
+  }
+}
+
+async function buildDailyRewardApiPayload(userId: string, row: DailyRewardRow, timeZone: string) {
+  const maxDays = DAILY_REWARD_AMOUNTS.length
+  const claimedCount = Math.max(0, Math.min(row.claimed_count, maxDays))
+  const [wonderCoins, ownedStoreItemIds, paidOrderCount, schedule] = await Promise.all([
+    getUserWonderCoins(userId),
+    getOwnedWonderStoreItemIds(userId),
+    getPaidOrderCount(userId),
+    fetchLocalDailyRewardSchedule(pool, userId, timeZone, claimedCount, maxDays),
+  ])
+  return getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds, paidOrderCount, schedule)
 }
 
 async function ensureDailyRewardRow(userId: string) {
@@ -172,23 +222,29 @@ async function getOwnedWonderStoreItemIds(userId: string): Promise<string[]> {
 function getDailyRewardPayload(
   row: DailyRewardRow,
   wonderCoins: number,
-  ownedStoreItemIds: string[]
+  ownedStoreItemIds: string[],
+  paidOrderCount: number,
+  schedule: { canClaimByLocalCalendar: boolean; nextUnlockAt: string | null },
 ) {
-  const nowMs = Date.now()
   const maxDays = DAILY_REWARD_AMOUNTS.length
   const claimedCount = Math.max(0, Math.min(row.claimed_count, maxDays))
-  const lastClaimMs = new Date(row.last_claimed_at).getTime()
-  const nextUnlockMs = lastClaimMs + DAILY_REWARD_INTERVAL_MS
   const hasCompletedAllRewards = claimedCount >= maxDays
-  const canClaim = !hasCompletedAllRewards && (claimedCount === 0 || nowMs >= nextUnlockMs)
+  const canClaim = !hasCompletedAllRewards && schedule.canClaimByLocalCalendar
   const nextUnlockAt =
-    hasCompletedAllRewards || claimedCount === 0 ? null : new Date(nextUnlockMs).toISOString()
+    hasCompletedAllRewards || claimedCount === 0 ? null : schedule.nextUnlockAt
+
+  const loginStreak =
+    typeof row.login_streak_count === 'number' && Number.isFinite(row.login_streak_count)
+      ? Math.max(0, Math.floor(row.login_streak_count))
+      : 0
 
   return {
     walletBalance: wonderCoins,
     ownedStoreItemIds,
     claimedCount,
-    currentStreakDays: claimedCount,
+    /** Consecutive local-calendar-day streak (client `X-User-Timezone`; claims + Daily Rewards after day 7). */
+    currentStreakDays: loginStreak,
+    paidOrderCount,
     canClaim,
     nextUnlockAt,
     rewards: DAILY_REWARD_AMOUNTS.map((amount, index) => {
@@ -201,6 +257,35 @@ function getDailyRewardPayload(
       }
       return { day, amount, status }
     }),
+  }
+}
+
+async function userEarnsProfileBadge(userId: string, badgeId: string): Promise<boolean> {
+  if (badgeId === 'badge:heart') return true
+  const row = await ensureDailyRewardRow(userId)
+  if (!row) return false
+  const paid = await getPaidOrderCount(userId)
+  const streak =
+    typeof row.login_streak_count === 'number' && Number.isFinite(row.login_streak_count)
+      ? Math.max(0, Math.floor(row.login_streak_count))
+      : 0
+  const claimed = Math.max(0, Math.floor(row.claimed_count))
+
+  switch (badgeId) {
+    case 'badge:day7':
+      return claimed >= 7
+    case 'badge:day30':
+      return streak >= 30
+    case 'badge:day90':
+      return streak >= 90
+    case 'badge:order1':
+      return paid >= 1
+    case 'badge:order5':
+      return paid >= 5
+    case 'badge:order10':
+      return paid >= 10
+    default:
+      return false
   }
 }
 
@@ -613,15 +698,24 @@ router.get('/daily-rewards', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 
+  const tz = getClientTimeZoneFromRequest(req)
+
   try {
-    const row = await ensureDailyRewardRow(auth.userId)
+    let row = await ensureDailyRewardRow(auth.userId)
     if (!row) {
       return res.status(500).json({ error: 'Unable to load daily rewards' })
     }
-    const wonderCoins = await getUserWonderCoins(auth.userId)
-    const ownedStoreItemIds = await getOwnedWonderStoreItemIds(auth.userId)
+    const maxDays = DAILY_REWARD_AMOUNTS.length
+    if (row.claimed_count >= maxDays) {
+      try {
+        await runLoginStreakBump(pool, auth.userId, true, tz)
+      } catch (e: any) {
+        if (e?.code !== '42703') throw e
+      }
+      row = (await ensureDailyRewardRow(auth.userId)) ?? row
+    }
 
-    return res.status(200).json(getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds))
+    return res.status(200).json(await buildDailyRewardApiPayload(auth.userId, row, tz))
   } catch (error) {
     console.error('Failed to load daily rewards', error)
     return res.status(500).json({ error: 'Unable to load daily rewards' })
@@ -636,6 +730,7 @@ router.post('/daily-rewards/claim', async (req, res) => {
 
   const userId = auth.userId
   const maxDays = DAILY_REWARD_AMOUNTS.length
+  const tz = getClientTimeZoneFromRequest(req)
 
   const client = await pool.connect()
   try {
@@ -651,10 +746,13 @@ router.post('/daily-rewards/claim', async (req, res) => {
           updated_at = NOW()
         WHERE user_id = $1
           AND claimed_count < $2
-          AND (claimed_count = 0 OR last_claimed_at <= NOW() - INTERVAL '24 hours')
+          AND (
+            claimed_count = 0
+            OR (last_claimed_at AT TIME ZONE $3)::date < (CURRENT_TIMESTAMP AT TIME ZONE $3)::date
+          )
         RETURNING claimed_count, last_claimed_at
       `,
-      [userId, maxDays]
+      [userId, maxDays, tz]
     )
 
     const updatedRow = updateResult.rows[0]
@@ -664,11 +762,9 @@ router.post('/daily-rewards/claim', async (req, res) => {
       if (!currentRow) {
         return res.status(500).json({ error: 'Unable to load claim status' })
       }
-      const wonderCoins = await getUserWonderCoins(userId)
-      const ownedStoreItemIds = await getOwnedWonderStoreItemIds(userId)
       return res.status(409).json({
         error: 'Reward is not unlocked yet',
-        ...getDailyRewardPayload(currentRow, wonderCoins, ownedStoreItemIds),
+        ...(await buildDailyRewardApiPayload(userId, currentRow, tz)),
       })
     }
 
@@ -684,11 +780,34 @@ router.post('/daily-rewards/claim', async (req, res) => {
       [userId, coinsAdded]
     )
 
+    try {
+      await runLoginStreakBump(client, userId, false, tz)
+    } catch (e: any) {
+      if (e?.code !== '42703') throw e
+    }
+
+    const fullRow = await client.query<DailyRewardRow>(
+      `
+        SELECT
+          claimed_count,
+          last_claimed_at,
+          COALESCE(login_streak_count, 0)::int AS login_streak_count,
+          login_streak_last_calendar_date::text AS login_streak_last_calendar_date
+        FROM user_daily_rewards
+        WHERE user_id = $1
+        LIMIT 1
+      `,
+      [userId]
+    )
+    const payloadRow = fullRow.rows[0]
+    if (!payloadRow) {
+      await client.query('ROLLBACK')
+      return res.status(500).json({ error: 'Unable to load rewards after claim' })
+    }
+
     await client.query('COMMIT')
 
-    const wonderCoins = await getUserWonderCoins(userId)
-    const ownedStoreItemIds = await getOwnedWonderStoreItemIds(userId)
-    return res.status(200).json(getDailyRewardPayload(updatedRow, wonderCoins, ownedStoreItemIds))
+    return res.status(200).json(await buildDailyRewardApiPayload(userId, payloadRow, tz))
   } catch (error) {
     try {
       await client.query('ROLLBACK')
@@ -815,6 +934,7 @@ router.post('/wonder-store/purchase', async (req, res) => {
   }
 
   const userId = auth.userId
+  const tz = getClientTimeZoneFromRequest(req)
   const itemId = String(req.body?.itemId || '').trim().toLowerCase()
   const cost = WONDER_STORE_ITEM_COSTS[itemId]
   if (!itemId || cost == null) {
@@ -835,11 +955,9 @@ router.post('/wonder-store/purchase', async (req, res) => {
       if (!row) {
         return res.status(500).json({ error: 'Unable to load rewards' })
       }
-      const wonderCoins = await getUserWonderCoins(userId)
-      const ownedStoreItemIds = await getOwnedWonderStoreItemIds(userId)
       return res.status(409).json({
         error: 'Already purchased',
-        ...getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds),
+        ...(await buildDailyRewardApiPayload(userId, row, tz)),
       })
     }
 
@@ -860,11 +978,9 @@ router.post('/wonder-store/purchase', async (req, res) => {
       if (!row) {
         return res.status(500).json({ error: 'Unable to load rewards' })
       }
-      const wonderCoins = await getUserWonderCoins(userId)
-      const ownedStoreItemIds = await getOwnedWonderStoreItemIds(userId)
       return res.status(402).json({
         error: 'Not enough coins',
-        ...getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds),
+        ...(await buildDailyRewardApiPayload(userId, row, tz)),
       })
     }
 
@@ -882,9 +998,7 @@ router.post('/wonder-store/purchase', async (req, res) => {
     if (!row) {
       return res.status(500).json({ error: 'Unable to load rewards' })
     }
-    const wonderCoins = spend.rows[0].wonder_coins
-    const ownedStoreItemIds = await getOwnedWonderStoreItemIds(userId)
-    return res.status(200).json(getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds))
+    return res.status(200).json(await buildDailyRewardApiPayload(userId, row, tz))
   } catch (error) {
     try {
       await client.query('ROLLBACK')
@@ -1139,6 +1253,26 @@ router.patch('/avatar-frame', async (req, res) => {
     return res.status(400).json({ error: 'Invalid avatar frame' })
   }
 
+  if (raw !== 'none') {
+    const storeKey = `avatar_frame_${raw}`
+    if (WONDER_STORE_ITEM_COSTS[storeKey] != null) {
+      const own = await runQuery<{ n: number }>(
+        `
+          SELECT 1 AS n
+          FROM user_wonder_store_purchases
+          WHERE user_id = $1 AND item_id = $2
+          LIMIT 1
+        `,
+        [auth.userId, storeKey]
+      )
+      if (own.rows.length === 0) {
+        return res.status(403).json({
+          error: 'Purchase this frame in the Wonder Store first.',
+        })
+      }
+    }
+  }
+
   try {
     const result = await runQuery<{ avatar_frame: string | null }>(
       `
@@ -1213,11 +1347,30 @@ router.patch('/profile-hero', async (req, res) => {
 
   const bannerUrl =
     req.body?.bannerUrl === undefined ? undefined : normalizeProfileBannerUrl(String(req.body?.bannerUrl ?? ''))
-  const badgeSlots =
+  const rawBadgeSlots =
     req.body?.badgeSlots === undefined ? undefined : normalizeProfileBadgeSlots(req.body?.badgeSlots)
 
-  if (bannerUrl === undefined && badgeSlots === undefined) {
+  if (bannerUrl === undefined && rawBadgeSlots === undefined) {
     return res.status(400).json({ error: 'No supported profile hero fields to update' })
+  }
+
+  let badgeSlotsToSave: HeroBadgeSlots | undefined
+  if (rawBadgeSlots !== undefined) {
+    badgeSlotsToSave = [
+      rawBadgeSlots[0] ? normalizeLegacyWonderBadgeId(rawBadgeSlots[0]) : null,
+      rawBadgeSlots[1] ? normalizeLegacyWonderBadgeId(rawBadgeSlots[1]) : null,
+      rawBadgeSlots[2] ? normalizeLegacyWonderBadgeId(rawBadgeSlots[2]) : null,
+    ] as HeroBadgeSlots
+    for (const b of badgeSlotsToSave) {
+      if (!b) continue
+      if (!WONDER_PROFILE_BADGE_IDS.has(b)) {
+        return res.status(400).json({ error: 'Invalid badge id' })
+      }
+      const allowed = await userEarnsProfileBadge(auth.userId, b)
+      if (!allowed) {
+        return res.status(400).json({ error: 'Badge is not unlocked yet' })
+      }
+    }
   }
 
   const sets: string[] = []
@@ -1228,9 +1381,9 @@ router.patch('/profile-hero', async (req, res) => {
     vals.push(bannerUrl)
     i += 1
   }
-  if (badgeSlots !== undefined) {
+  if (badgeSlotsToSave !== undefined) {
     sets.push(`profile_badge_slots = $${i}::jsonb`)
-    vals.push(JSON.stringify(badgeSlots))
+    vals.push(JSON.stringify(badgeSlotsToSave))
     i += 1
   }
 

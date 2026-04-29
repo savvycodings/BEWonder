@@ -2,7 +2,7 @@ import { pool, runQuery } from '../db/client'
 
 const ALLOWED_BIOMES = new Set(['grassland', 'mushroom', 'tropical'])
 
-export const WONDER_JUMP_CHEST_REWARD_COINS = 2
+export const WONDER_JUMP_CHEST_REWARD_COINS = 4
 
 /** TEMP: pickup sets unlock to `NOW()` so hub shows Open immediately. Set false for 6h production timer. */
 export const WONDER_JUMP_CHEST_PICKUP_INSTANT_UNLOCK_DEBUG = true
