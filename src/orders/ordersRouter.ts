@@ -10,7 +10,9 @@ const router = express.Router()
 
 /** South Africa domestic tiers (order currency must be ZAR). */
 const SHIPPING_PUDO_CENTS_ZAR = 7000
-const SHIPPING_STANDARD_CENTS_ZAR = 15000
+/** Per cart line unit: courier single vs whole set (matches app cart summary). */
+const SHIPPING_STANDARD_SINGLE_CENTS_ZAR = 15000
+const SHIPPING_STANDARD_SET_CENTS_ZAR = 20000
 
 type LineInput = { productId: string; quantity: number; packaging?: 'single' | 'set' }
 
@@ -171,11 +173,23 @@ router.post('/', async (req, res) => {
 
   let shippingCents = 0
   if (currency === 'ZAR') {
-    shippingCents =
-      deliveryMethod === 'pudo' ? SHIPPING_PUDO_CENTS_ZAR : SHIPPING_STANDARD_CENTS_ZAR
+    if (deliveryMethod === 'pudo') {
+      shippingCents = SHIPPING_PUDO_CENTS_ZAR
+    } else {
+      for (const raw of items) {
+        const qty = Math.max(1, Math.min(99, Math.floor(Number(raw.quantity) || 0)))
+        const packaging = raw.packaging === 'set' ? 'set' : 'single'
+        const perUnit =
+          packaging === 'set'
+            ? SHIPPING_STANDARD_SET_CENTS_ZAR
+            : SHIPPING_STANDARD_SINGLE_CENTS_ZAR
+        shippingCents += perUnit * qty
+      }
+    }
   } else {
     return res.status(400).json({
-      error: 'Domestic shipping (Pudo R70 / standard R150) applies to ZAR-priced items only',
+      error:
+        'Domestic shipping (Pudo R70 flat; courier R150/R200 per line by packaging) applies to ZAR-priced items only',
       detail: `This cart is priced in ${currency}.`,
     })
   }
@@ -308,12 +322,29 @@ router.get('/mine', async (req, res) => {
     currency_code: string
     total_cents: number
     created_at: string
+    preview_image_url: string | null
   }>(
     `
-      SELECT id, reference_code, status, payment_method, currency_code, total_cents, created_at
-      FROM orders
-      WHERE user_id = $1
-      ORDER BY created_at DESC
+      SELECT
+        o.id,
+        o.reference_code,
+        o.status,
+        o.payment_method,
+        o.currency_code,
+        o.total_cents,
+        o.created_at,
+        (
+          SELECT oli.image_url
+          FROM order_line_items oli
+          WHERE oli.order_id = o.id
+            AND oli.image_url IS NOT NULL
+            AND TRIM(oli.image_url) <> ''
+          ORDER BY oli.created_at ASC
+          LIMIT 1
+        ) AS preview_image_url
+      FROM orders o
+      WHERE o.user_id = $1
+      ORDER BY o.created_at DESC
       LIMIT 100
     `,
     [auth.userId]
@@ -328,6 +359,7 @@ router.get('/mine', async (req, res) => {
       currencyCode: r.currency_code,
       totalCents: r.total_cents,
       createdAt: r.created_at,
+      previewImageUrl: r.preview_image_url,
     })),
   })
 })

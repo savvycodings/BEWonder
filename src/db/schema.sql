@@ -349,6 +349,7 @@ CREATE INDEX IF NOT EXISTS idx_collection_products_collection ON collection_prod
 CREATE INDEX IF NOT EXISTS idx_collection_products_product ON collection_products (product_shopify_id);
 CREATE INDEX IF NOT EXISTS idx_products_handle ON products (handle);
 CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_products_created_at ON products (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_product_variants_product_id ON product_variants (product_id);
 CREATE INDEX IF NOT EXISTS idx_product_variants_shopify_id ON product_variants (shopify_id);
 CREATE INDEX IF NOT EXISTS idx_inventory_events_variant_shopify_id ON inventory_events (variant_shopify_id);

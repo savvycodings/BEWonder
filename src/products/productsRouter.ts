@@ -189,9 +189,44 @@ router.get('/categories/:slug', async (req, res) => {
 router.get('/products', async (req, res) => {
   const first = Math.max(1, Math.min(50, Number(req.query.first || 20)))
   const q = String(req.query.q || req.query.query || '').trim()
+  const sort = String(req.query.sort || '').trim().toLowerCase()
+  const collectionHandle = String(req.query.collection || '').trim()
 
-  const whereClause = q ? `WHERE p.title ILIKE $2 OR p.product_type ILIKE $2 OR p.vendor ILIKE $2` : ''
-  const values = q ? [first, `%${q}%`] : [first]
+  const orderBy =
+    sort === 'new'
+      ? 'p.created_at DESC NULLS LAST'
+      : 'p.updated_at DESC NULLS LAST'
+
+  const conditions: string[] = ['p.is_active = true']
+  const params: unknown[] = []
+
+  if (collectionHandle) {
+    params.push(collectionHandle)
+    const idx = params.length
+    conditions.push(`
+      EXISTS (
+        SELECT 1 FROM collection_products cp
+        JOIN collections c ON c.shopify_id = cp.collection_shopify_id
+        WHERE cp.product_shopify_id = p.shopify_id AND c.handle = $${idx}
+      )
+    `.trim())
+  }
+
+  if (q) {
+    params.push(`%${q}%`)
+    const idx = params.length
+    conditions.push(`(
+      p.title ILIKE $${idx}
+      OR p.product_type ILIKE $${idx}
+      OR p.vendor ILIKE $${idx}
+      OR COALESCE(array_to_string(p.tags, ' '), '') ILIKE $${idx}
+    )`)
+  }
+
+  params.push(first)
+  const limitIdx = params.length
+
+  const whereSql = `WHERE ${conditions.join(' AND ')}`
 
   const sql = `
     SELECT
@@ -224,9 +259,9 @@ router.get('/products', async (req, res) => {
       ORDER BY price DESC NULLS LAST
       LIMIT 1
     ) v_max ON true
-    ${whereClause}
-    ORDER BY p.updated_at DESC NULLS LAST
-    LIMIT $1
+    ${whereSql}
+    ORDER BY ${orderBy}
+    LIMIT $${limitIdx}
   `
 
   const result = await runQuery<{
@@ -244,7 +279,7 @@ router.get('/products', async (req, res) => {
     variant_set_price: any
     variant_set_compare_at_price: any
     variant_set_currency_code: string | null
-  }>(sql, values)
+  }>(sql, params)
 
   const products = result.rows.map((row) => {
     const images: string[] = Array.isArray(row.images) ? row.images : row.images?.length ? row.images : []
