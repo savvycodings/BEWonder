@@ -135,7 +135,7 @@ router.post('/messages', async (req, res) => {
       [messageId, auth.userId, body || null, imageUrl]
     )
   } catch (error: any) {
-    if (error?.code === '42P01') {
+    if (error?.code === '42P01' || error?.code === '42703') {
       return res.status(501).json({
         error: 'Community messaging is not enabled on this database yet.',
       })
@@ -194,7 +194,7 @@ router.patch('/messages/:messageId', async (req, res) => {
       [body, messageId, auth.userId]
     )
   } catch (error: any) {
-    if (error?.code === '42P01') {
+    if (error?.code === '42P01' || error?.code === '42703') {
       return res.status(501).json({
         error: 'Community messaging is not enabled on this database yet.',
       })

@@ -59,6 +59,9 @@ ALTER TABLE community_messages
 ADD COLUMN IF NOT EXISTS image_url TEXT;
 
 ALTER TABLE community_messages
+ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE community_messages
 ALTER COLUMN body DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS user_daily_rewards (
