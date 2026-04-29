@@ -16,6 +16,13 @@ export type ShopifyProductSummary = {
   compareAtPrice: ShopifyMoneyV2 | null
 }
 
+export type ShopifyCollectionSummary = {
+  id: string
+  title: string
+  handle: string
+  imageUrl: string | null
+}
+
 function getStorefrontConfig() {
   const domain = String(process.env.SHOPIFY_STORE_DOMAIN || '').trim()
   const token = String(process.env.SHOPIFY_STOREFRONT_PUBLIC_TOKEN || '').trim()
@@ -194,5 +201,50 @@ export async function getProductByHandle(handle: string) {
     price: variant?.price ?? null,
     compareAtPrice: variant?.compareAtPrice ?? null,
   } satisfies ShopifyProductSummary
+}
+
+export async function getCollectionsByIds(ids: string[]) {
+  const safeIds = Array.from(
+    new Set((Array.isArray(ids) ? ids : []).map((id) => String(id || '').trim()).filter(Boolean))
+  ).slice(0, 100)
+  if (!safeIds.length) return []
+
+  const gql = `
+    query CollectionsByIds($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Collection {
+          id
+          title
+          handle
+          image { url }
+        }
+      }
+    }
+  `
+
+  const data = await storefrontRequest<{
+    nodes: Array<
+      | {
+          id: string
+          title: string
+          handle: string
+          image: { url: string } | null
+        }
+      | null
+    >
+  }>(gql, { ids: safeIds })
+
+  const nodeById = new Map<string, ShopifyCollectionSummary>()
+  for (const node of data.nodes || []) {
+    if (!node?.id || !node?.title || !node?.handle) continue
+    nodeById.set(node.id, {
+      id: node.id,
+      title: node.title,
+      handle: node.handle,
+      imageUrl: node.image?.url ?? null,
+    })
+  }
+
+  return safeIds.map((id) => nodeById.get(id)).filter(Boolean) as ShopifyCollectionSummary[]
 }
 

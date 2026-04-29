@@ -1,7 +1,30 @@
 import express from 'express'
-import { getProductByHandle, listProducts } from './storefront'
+import { getCollectionsByIds, getProductByHandle, listProducts } from './storefront'
 
 const router = express.Router()
+
+router.get(
+  '/collections/by-ids',
+  async (req, res, next) => {
+    try {
+      const rawIds =
+        typeof req.query.ids === 'string'
+          ? req.query.ids
+          : Array.isArray(req.query.ids)
+            ? req.query.ids.join(',')
+            : ''
+      const ids = rawIds
+        .split(',')
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+
+      const collections = await getCollectionsByIds(ids)
+      res.status(200).json({ collections })
+    } catch (err) {
+      next(err)
+    }
+  }
+)
 
 router.get(
   '/products',

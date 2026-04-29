@@ -266,3 +266,139 @@ UPDATE users
 SET avatar_frame = 'none'
 WHERE avatar_frame IS NOT NULL
   AND avatar_frame NOT IN ('none', 'neon', 'gold', 'rainbow', 'prism', 'meridian', 'hex', 'shard');
+
+-- ---------------------------------------------------------------------------
+-- Catalog mirror tables (Shopify -> Postgres mirror; shared by web + mobile reads)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS collections (
+  id BIGSERIAL PRIMARY KEY,
+  shopify_id TEXT NOT NULL UNIQUE,
+  handle TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  image_url TEXT,
+  updated_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS collection_products (
+  id BIGSERIAL PRIMARY KEY,
+  collection_shopify_id TEXT NOT NULL,
+  product_shopify_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_collection_products_unique_pair
+  ON collection_products (collection_shopify_id, product_shopify_id);
+
+CREATE TABLE IF NOT EXISTS products (
+  id BIGSERIAL PRIMARY KEY,
+  shopify_id TEXT NOT NULL UNIQUE,
+  collection_shopify_id TEXT,
+  handle TEXT NOT NULL,
+  title TEXT NOT NULL,
+  subtitle TEXT,
+  description_html TEXT,
+  thumbnail_url TEXT,
+  vendor TEXT,
+  brand TEXT,
+  tags TEXT[],
+  product_type TEXT,
+  total_inventory NUMERIC,
+  available_for_sale BOOLEAN,
+  options JSONB,
+  images JSONB,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS product_variants (
+  id BIGSERIAL PRIMARY KEY,
+  shopify_id TEXT NOT NULL UNIQUE,
+  product_id BIGINT NOT NULL,
+  title TEXT NOT NULL,
+  sku TEXT,
+  barcode TEXT,
+  price NUMERIC(10, 2) NOT NULL,
+  compare_at_price NUMERIC(10, 2),
+  currency_code TEXT,
+  available_for_sale BOOLEAN NOT NULL DEFAULT TRUE,
+  quantity_available NUMERIC,
+  position NUMERIC,
+  selected_options JSONB,
+  updated_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS inventory_events (
+  id BIGSERIAL PRIMARY KEY,
+  variant_shopify_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  quantity_delta NUMERIC NOT NULL,
+  raw_payload JSONB,
+  occurred_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_collections_handle ON collections (handle);
+CREATE INDEX IF NOT EXISTS idx_collection_products_collection ON collection_products (collection_shopify_id);
+CREATE INDEX IF NOT EXISTS idx_collection_products_product ON collection_products (product_shopify_id);
+CREATE INDEX IF NOT EXISTS idx_products_handle ON products (handle);
+CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_product_variants_product_id ON product_variants (product_id);
+CREATE INDEX IF NOT EXISTS idx_product_variants_shopify_id ON product_variants (shopify_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_events_variant_shopify_id ON inventory_events (variant_shopify_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_events_occurred_at ON inventory_events (occurred_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Better Auth compatibility additions (preserve existing users table)
+-- ---------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS image TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS shipping_name TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS shipping_address1 TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS shipping_city TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS shipping_region TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS shipping_postal_code TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS shipping_country TEXT;
+
+CREATE TABLE IF NOT EXISTS accounts (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  provider_user_id TEXT,
+  access_token TEXT,
+  refresh_token TEXT,
+  id_token TEXT,
+  scope TEXT,
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  fresh_expires_at TIMESTAMPTZ,
+  ip_address TEXT,
+  user_agent TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS verifications (
+  id TEXT PRIMARY KEY,
+  identifier TEXT NOT NULL,
+  value TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts (user_id);
+CREATE INDEX IF NOT EXISTS idx_accounts_provider_id ON accounts (provider_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
+CREATE INDEX IF NOT EXISTS idx_verifications_identifier ON verifications (identifier);
