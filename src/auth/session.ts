@@ -64,18 +64,18 @@ export async function getAuthUserFromRequest(req: Request) {
         u.id as user_id,
         u.email,
         u.created_at,
-        u.name,
-        u.image,
-        u.shipping_address1,
-        u.shipping_address2,
-        u.phone,
-        u.pudo_locker_name,
-        u.pudo_locker_address,
-        u.eft_bank_account_name,
-        u.eft_bank_name,
-        u.eft_bank_account_number,
-        u.eft_bank_branch,
-        u.avatar_frame
+        to_jsonb(u)->>'name' AS name,
+        to_jsonb(u)->>'image' AS image,
+        to_jsonb(u)->>'shipping_address1' AS shipping_address1,
+        to_jsonb(u)->>'shipping_address2' AS shipping_address2,
+        to_jsonb(u)->>'phone' AS phone,
+        to_jsonb(u)->>'pudo_locker_name' AS pudo_locker_name,
+        to_jsonb(u)->>'pudo_locker_address' AS pudo_locker_address,
+        to_jsonb(u)->>'eft_bank_account_name' AS eft_bank_account_name,
+        to_jsonb(u)->>'eft_bank_name' AS eft_bank_name,
+        to_jsonb(u)->>'eft_bank_account_number' AS eft_bank_account_number,
+        to_jsonb(u)->>'eft_bank_branch' AS eft_bank_branch,
+        to_jsonb(u)->>'avatar_frame' AS avatar_frame
       FROM sessions s
       JOIN users u ON u.id = s.user_id
       WHERE s.id = $1
