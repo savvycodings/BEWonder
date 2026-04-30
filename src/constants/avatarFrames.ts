@@ -8,6 +8,8 @@ export const ALLOWED_AVATAR_FRAME_IDS = [
   'meridian',
   'hex',
   'shard',
+  'rune',
+  'sentinel',
 ] as const
 
 export type AllowedAvatarFrameId = (typeof ALLOWED_AVATAR_FRAME_IDS)[number]

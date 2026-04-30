@@ -4,12 +4,13 @@ const ALLOWED_BIOMES = new Set(['grassland', 'mushroom', 'tropical'])
 
 export const WONDER_JUMP_CHEST_REWARD_COINS = 4
 
-/** TEMP: pickup sets unlock to `NOW()` so hub shows Open immediately. Set false for 6h production timer. */
-export const WONDER_JUMP_CHEST_PICKUP_INSTANT_UNLOCK_DEBUG = true
+/** Debug-only: when true, starting the chest timer unlocks immediately. */
+export const WONDER_JUMP_CHEST_PICKUP_INSTANT_UNLOCK_DEBUG = false
 
 export type WonderJumpProgressPayload = {
   highScore: number
   unlockedBiomes: string[]
+  chestDocked: boolean
   chestUnlocksAt: string | null
 }
 
@@ -22,6 +23,10 @@ export type ClaimWonderJumpChestResult =
       chestUnlocksAt?: string | null
       msRemaining?: number
     }
+
+function chestDockedToBool(v: unknown): boolean {
+  return v === true
+}
 
 function chestUnlocksAtToIso(v: unknown): string | null {
   if (v == null) return null
@@ -61,10 +66,11 @@ export async function getWonderJumpProgressForUser(userId: string): Promise<Wond
   const result = await runQuery<{
     high_score: number
     unlocked_biomes: unknown
+    wonder_jump_chest_docked: unknown
     wonder_jump_chest_unlocks_at: unknown
   }>(
     `
-      SELECT high_score, unlocked_biomes, wonder_jump_chest_unlocks_at
+      SELECT high_score, unlocked_biomes, wonder_jump_chest_docked, wonder_jump_chest_unlocks_at
       FROM user_wonder_jump_progress
       WHERE user_id = $1
     `,
@@ -75,12 +81,14 @@ export async function getWonderJumpProgressForUser(userId: string): Promise<Wond
     return {
       highScore: 0,
       unlockedBiomes: ['grassland', 'mushroom', 'tropical'],
+      chestDocked: false,
       chestUnlocksAt: null,
     }
   }
   return {
     highScore: row.high_score,
     unlockedBiomes: parseBiomesFromDb(row.unlocked_biomes),
+    chestDocked: chestDockedToBool(row.wonder_jump_chest_docked),
     chestUnlocksAt: chestUnlocksAtToIso(row.wonder_jump_chest_unlocks_at),
   }
 }
@@ -127,6 +135,38 @@ export async function getWonderJumpLeaderboard(limit: number): Promise<WonderJum
   }))
 }
 
+/** 1-based rank using the same ordering as public leaderboard; `null` when user is unranked. */
+export async function getWonderJumpLeaderboardRankForUser(userId: string): Promise<number | null> {
+  await ensureWonderJumpProgressRow(userId)
+  const result = await runQuery<{ rank: number | null }>(
+    `
+      WITH me AS (
+        SELECT high_score, updated_at
+        FROM user_wonder_jump_progress
+        WHERE user_id = $1
+      )
+      SELECT CASE
+        WHEN me.high_score IS NULL OR me.high_score <= 0 THEN NULL
+        ELSE (
+          1 + (
+            SELECT COUNT(*)
+            FROM user_wonder_jump_progress p
+            WHERE p.high_score > 0
+              AND (
+                p.high_score > me.high_score
+                OR (p.high_score = me.high_score AND p.updated_at < me.updated_at)
+              )
+          )
+        )
+      END AS rank
+      FROM me
+    `,
+    [userId]
+  )
+  const rank = result.rows[0]?.rank
+  return typeof rank === 'number' && Number.isFinite(rank) ? rank : null
+}
+
 export async function mergeWonderJumpProgressForUser(
   userId: string,
   body: { highScore?: unknown; unlockedBiomes?: unknown }
@@ -160,17 +200,35 @@ export async function mergeWonderJumpProgressForUser(
   return getWonderJumpProgressForUser(userId)
 }
 
-/** Start chest open timer if none pending. No-op if already pending. */
+/** Place a picked chest in the dock. No-op if a docked/timed chest already exists. */
 export async function pickupWonderJumpChestForUser(userId: string): Promise<WonderJumpProgressPayload> {
+  await ensureWonderJumpProgressRow(userId)
+  await runQuery(
+    `
+      UPDATE user_wonder_jump_progress
+      SET
+        wonder_jump_chest_docked = TRUE,
+        wonder_jump_chest_unlocks_at = NULL,
+        updated_at = NOW()
+      WHERE user_id = $1
+        AND wonder_jump_chest_docked = FALSE
+        AND wonder_jump_chest_unlocks_at IS NULL
+    `,
+    [userId]
+  )
+  return getWonderJumpProgressForUser(userId)
+}
+
+/** Starts the 6-hour chest timer from docked state. */
+export async function startWonderJumpChestTimerForUser(userId: string): Promise<WonderJumpProgressPayload> {
   await ensureWonderJumpProgressRow(userId)
   if (WONDER_JUMP_CHEST_PICKUP_INSTANT_UNLOCK_DEBUG) {
     await runQuery(
       `
         UPDATE user_wonder_jump_progress
-        SET
-          wonder_jump_chest_unlocks_at = NOW(),
-          updated_at = NOW()
+        SET wonder_jump_chest_unlocks_at = NOW(), updated_at = NOW()
         WHERE user_id = $1
+          AND wonder_jump_chest_docked = TRUE
           AND wonder_jump_chest_unlocks_at IS NULL
       `,
       [userId]
@@ -179,10 +237,9 @@ export async function pickupWonderJumpChestForUser(userId: string): Promise<Wond
     await runQuery(
       `
         UPDATE user_wonder_jump_progress
-        SET
-          wonder_jump_chest_unlocks_at = NOW() + INTERVAL '6 hours',
-          updated_at = NOW()
+        SET wonder_jump_chest_unlocks_at = NOW() + INTERVAL '6 hours', updated_at = NOW()
         WHERE user_id = $1
+          AND wonder_jump_chest_docked = TRUE
           AND wonder_jump_chest_unlocks_at IS NULL
       `,
       [userId]
@@ -196,17 +253,18 @@ export async function claimWonderJumpChestForUser(userId: string): Promise<Claim
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const sel = await client.query<{ wonder_jump_chest_unlocks_at: Date | null }>(
+    const sel = await client.query<{ wonder_jump_chest_docked: boolean; wonder_jump_chest_unlocks_at: Date | null }>(
       `
-        SELECT wonder_jump_chest_unlocks_at
+        SELECT wonder_jump_chest_docked, wonder_jump_chest_unlocks_at
         FROM user_wonder_jump_progress
         WHERE user_id = $1
         FOR UPDATE
       `,
       [userId]
     )
+    const docked = sel.rows[0]?.wonder_jump_chest_docked === true
     const unlock = sel.rows[0]?.wonder_jump_chest_unlocks_at
-    if (!unlock) {
+    if (!docked || !unlock) {
       await client.query('ROLLBACK')
       return { ok: false, status: 400, message: 'Nothing to claim' }
     }
@@ -238,7 +296,7 @@ export async function claimWonderJumpChestForUser(userId: string): Promise<Claim
     await client.query(
       `
         UPDATE user_wonder_jump_progress
-        SET wonder_jump_chest_unlocks_at = NULL, updated_at = NOW()
+        SET wonder_jump_chest_docked = FALSE, wonder_jump_chest_unlocks_at = NULL, updated_at = NOW()
         WHERE user_id = $1
       `,
       [userId]

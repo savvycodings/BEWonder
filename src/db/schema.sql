@@ -240,7 +240,7 @@ CREATE TABLE IF NOT EXISTS user_wonder_store_purchases (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id TEXT NOT NULL,
   item_id TEXT NOT NULL,
-  cost_coins INTEGER NOT NULL CHECK (cost_coins > 0),
+  cost_coins INTEGER NOT NULL CHECK (cost_coins >= 0),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (user_id, item_id)
 );
@@ -287,6 +287,8 @@ CREATE INDEX IF NOT EXISTS idx_user_wonder_jump_progress_high_score
 -- WonderJump tropical chest: set when picked up (opens after interval); NULL = no pending chest.
 ALTER TABLE user_wonder_jump_progress
 ADD COLUMN IF NOT EXISTS wonder_jump_chest_unlocks_at TIMESTAMPTZ;
+ALTER TABLE user_wonder_jump_progress
+ADD COLUMN IF NOT EXISTS wonder_jump_chest_docked BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- Avatar frames: keep DB values aligned with app + server allowlist (see server/src/constants/avatarFrames.ts).
 UPDATE users

@@ -11,9 +11,11 @@ import {
 import {
   claimWonderJumpChestForUser,
   getWonderJumpLeaderboard,
+  getWonderJumpLeaderboardRankForUser,
   getWonderJumpProgressForUser,
   mergeWonderJumpProgressForUser,
   pickupWonderJumpChestForUser,
+  startWonderJumpChestTimerForUser,
 } from './wonderJumpProgress'
 import { ALLOWED_AVATAR_FRAMES, normalizeStoredAvatarFrameId } from '../constants/avatarFrames'
 import { normalizeLegacyWonderBadgeId, WONDER_PROFILE_BADGE_IDS } from '../constants/wonderBadges'
@@ -41,6 +43,8 @@ const WONDER_STORE_ITEM_COSTS: Record<string, number> = {
   avatar_frame_meridian: 7,
   avatar_frame_hex: 12,
   avatar_frame_shard: 12,
+  avatar_frame_rune: 12,
+  avatar_frame_sentinel: 12,
   wonderjump_character_ghost: 10,
 }
 
@@ -174,13 +178,14 @@ async function getPaidOrderCount(userId: string): Promise<number> {
 async function buildDailyRewardApiPayload(userId: string, row: DailyRewardRow, timeZone: string) {
   const maxDays = DAILY_REWARD_AMOUNTS.length
   const claimedCount = Math.max(0, Math.min(row.claimed_count, maxDays))
-  const [wonderCoins, ownedStoreItemIds, paidOrderCount, schedule] = await Promise.all([
+  const [wonderCoins, ownedStoreItemIds, paidOrderCount, wonderJumpRank, schedule] = await Promise.all([
     getUserWonderCoins(userId),
     getOwnedWonderStoreItemIds(userId),
     getPaidOrderCount(userId),
+    getWonderJumpLeaderboardRankForUser(userId),
     fetchLocalDailyRewardSchedule(pool, userId, timeZone, claimedCount, maxDays),
   ])
-  return getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds, paidOrderCount, schedule)
+  return getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds, paidOrderCount, wonderJumpRank, schedule)
 }
 
 async function ensureDailyRewardRow(userId: string) {
@@ -224,6 +229,7 @@ function getDailyRewardPayload(
   wonderCoins: number,
   ownedStoreItemIds: string[],
   paidOrderCount: number,
+  wonderJumpRank: number | null,
   schedule: { canClaimByLocalCalendar: boolean; nextUnlockAt: string | null },
 ) {
   const maxDays = DAILY_REWARD_AMOUNTS.length
@@ -245,6 +251,7 @@ function getDailyRewardPayload(
     /** Consecutive local-calendar-day streak (client `X-User-Timezone`; claims + Daily Rewards after day 7). */
     currentStreakDays: loginStreak,
     paidOrderCount,
+    wonderJumpRank,
     canClaim,
     nextUnlockAt,
     rewards: DAILY_REWARD_AMOUNTS.map((amount, index) => {
@@ -264,7 +271,7 @@ async function userEarnsProfileBadge(userId: string, badgeId: string): Promise<b
   if (badgeId === 'badge:heart') return true
   const row = await ensureDailyRewardRow(userId)
   if (!row) return false
-  const paid = await getPaidOrderCount(userId)
+  const [paid, rank] = await Promise.all([getPaidOrderCount(userId), getWonderJumpLeaderboardRankForUser(userId)])
   const streak =
     typeof row.login_streak_count === 'number' && Number.isFinite(row.login_streak_count)
       ? Math.max(0, Math.floor(row.login_streak_count))
@@ -284,6 +291,18 @@ async function userEarnsProfileBadge(userId: string, badgeId: string): Promise<b
       return paid >= 5
     case 'badge:order10':
       return paid >= 10
+    case 'badge:wj_top100':
+      return rank !== null && rank <= 100
+    case 'badge:wj_top50':
+      return rank !== null && rank <= 50
+    case 'badge:wj_top10':
+      return rank !== null && rank <= 10
+    case 'badge:wj_top3':
+      return rank !== null && rank <= 3
+    case 'badge:wj_top2':
+      return rank !== null && rank <= 2
+    case 'badge:wj_top1':
+      return rank !== null && rank <= 1
     default:
       return false
   }
@@ -897,6 +916,26 @@ router.post('/wonder-jump-chest/pickup', async (_req, res) => {
   }
 })
 
+router.post('/wonder-jump-chest/start', async (_req, res) => {
+  const auth = await getAuthUserFromRequest(_req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  try {
+    const data = await startWonderJumpChestTimerForUser(auth.userId)
+    return res.status(200).json(data)
+  } catch (error: any) {
+    if (error?.code === '42P01' || error?.code === '42703') {
+      return res.status(503).json({
+        error: 'WonderJump chest is not available yet',
+        detail: 'Run pnpm db:migrate (wonder_jump_chest_unlocks_at column).',
+      })
+    }
+    console.error('Failed to start WonderJump chest timer', error)
+    return res.status(500).json({ error: 'Unable to start chest timer' })
+  }
+})
+
 router.post('/wonder-jump-chest/claim', async (_req, res) => {
   const auth = await getAuthUserFromRequest(_req)
   if (!auth) {
@@ -987,7 +1026,7 @@ router.post('/wonder-store/purchase', async (req, res) => {
     await client.query(
       `
         INSERT INTO user_wonder_store_purchases (user_id, item_id, cost_coins)
-        VALUES ($1, $2, $3)
+        VALUES ($1, $2, GREATEST($3, 1))
       `,
       [userId, itemId, cost]
     )
