@@ -30,12 +30,12 @@ const DAILY_REWARD_AMOUNTS = [1, 2, 3, 4, 5, 6, 7]
 
 /** Wonder Store item ids → cost in wonder coins (server is source of truth). */
 const WONDER_STORE_ITEM_COSTS: Record<string, number> = {
-  midnight: 6,
-  sunset: 7,
+  midnight: 5,
+  sunset: 5,
   mint: 5,
-  royal: 8,
-  peach: 4,
-  forest: 6,
+  royal: 5,
+  peach: 5,
+  forest: 5,
   avatar_frame_neon: 5,
   avatar_frame_gold: 5,
   avatar_frame_rainbow: 5,
