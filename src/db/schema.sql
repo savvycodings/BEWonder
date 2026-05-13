@@ -217,6 +217,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_order_payment_events_idempotent
 -- ---------------------------------------------------------------------------
 ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS shipping_address2 TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS shipping_city TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS shipping_region TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS shipping_postal_code TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS pudo_locker_name TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS pudo_locker_address TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_account_name TEXT;

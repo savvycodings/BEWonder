@@ -89,6 +89,45 @@ function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
 
+const ADDRESS_TEXT_PATTERN = /^[a-zA-Z0-9\s,.'#/-]+$/
+const PLACE_NAME_PATTERN = /^[a-zA-Z][a-zA-Z\s'.-]*$/
+
+function validateShippingAddressFields(fields: {
+  shippingAddress?: string
+  shippingAddressLine2?: string
+  shippingPostalCode?: string
+  shippingCity?: string
+  shippingProvince?: string
+}) {
+  if (fields.shippingAddress !== undefined) {
+    if (!fields.shippingAddress || fields.shippingAddress.length < 5 || !ADDRESS_TEXT_PATTERN.test(fields.shippingAddress)) {
+      return 'Enter a valid street address.'
+    }
+  }
+
+  if (fields.shippingAddressLine2 && !ADDRESS_TEXT_PATTERN.test(fields.shippingAddressLine2)) {
+    return 'Enter a valid apartment, suite, or unit.'
+  }
+
+  if (fields.shippingPostalCode !== undefined && !/^\d{4}$/.test(fields.shippingPostalCode)) {
+    return 'Enter a valid 4-digit postal code.'
+  }
+
+  if (fields.shippingCity !== undefined) {
+    if (!fields.shippingCity || !PLACE_NAME_PATTERN.test(fields.shippingCity)) {
+      return 'Enter a valid city name.'
+    }
+  }
+
+  if (fields.shippingProvince !== undefined) {
+    if (!fields.shippingProvince || !PLACE_NAME_PATTERN.test(fields.shippingProvince)) {
+      return 'Enter a valid province.'
+    }
+  }
+
+  return null
+}
+
 function hashPassword(password: string) {
   const salt = crypto.randomBytes(16).toString('hex')
   const iterations = 100000
@@ -315,6 +354,9 @@ router.post('/register', async (req, res) => {
   const phone = String(req.body?.phone || '').trim()
   const shippingAddress = String(req.body?.shippingAddress || '').trim()
   const shippingAddressLine2 = String(req.body?.shippingAddressLine2 || '').trim()
+  const shippingPostalCode = String(req.body?.shippingPostalCode || '').trim()
+  const shippingCity = String(req.body?.shippingCity || '').trim()
+  const shippingProvince = String(req.body?.shippingProvince || '').trim()
   const pudoLockerName = String(req.body?.pudoLockerName || '').trim()
   const pudoLockerAddress = String(req.body?.pudoLockerAddress || '').trim()
   const eftBankAccountName = String(req.body?.eftBankAccountName || '').trim()
@@ -354,6 +396,17 @@ router.post('/register', async (req, res) => {
     })
   }
 
+  const shippingError = validateShippingAddressFields({
+    shippingAddress: shippingAddress || undefined,
+    shippingAddressLine2: shippingAddressLine2 || undefined,
+    shippingPostalCode: shippingPostalCode || undefined,
+    shippingCity: shippingCity || undefined,
+    shippingProvince: shippingProvince || undefined,
+  })
+  if (shippingError) {
+    return res.status(400).json({ error: shippingError })
+  }
+
   const passwordHash = hashPassword(password)
 
   try {
@@ -365,6 +418,9 @@ router.post('/register', async (req, res) => {
       image: string | null
       shipping_address1: string | null
       shipping_address2: string | null
+      shipping_postal_code: string | null
+      shipping_city: string | null
+      shipping_region: string | null
       phone: string | null
       pudo_locker_name: string | null
       pudo_locker_address: string | null
@@ -382,6 +438,9 @@ router.post('/register', async (req, res) => {
           image,
           shipping_address1,
           shipping_address2,
+          shipping_postal_code,
+          shipping_city,
+          shipping_region,
           phone,
           pudo_locker_name,
           pudo_locker_address,
@@ -392,7 +451,11 @@ router.post('/register', async (req, res) => {
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8,
+          $9, $10, $11, $12, $13, $14, $15, $16,
+          NOW(), NOW()
+        )
         RETURNING
           id,
           email,
@@ -401,6 +464,9 @@ router.post('/register', async (req, res) => {
           image,
           shipping_address1,
           shipping_address2,
+          shipping_postal_code,
+          shipping_city,
+          shipping_region,
           phone,
           pudo_locker_name,
           pudo_locker_address,
@@ -417,6 +483,9 @@ router.post('/register', async (req, res) => {
         null,
         shippingAddress || null,
         shippingAddressLine2 || null,
+        shippingPostalCode || null,
+        shippingCity || null,
+        shippingProvince || null,
         phone,
         pudoLockerName || null,
         pudoLockerAddress || null,
@@ -467,6 +536,9 @@ router.post('/register', async (req, res) => {
         profilePicture: user.image,
         shippingAddress: user.shipping_address1,
         shippingAddressLine2: user.shipping_address2,
+        shippingPostalCode: user.shipping_postal_code,
+        shippingCity: user.shipping_city,
+        shippingProvince: user.shipping_region,
         phone: user.phone,
         pudoLockerName: user.pudo_locker_name,
         pudoLockerAddress: user.pudo_locker_address,
@@ -544,6 +616,9 @@ router.post('/login', async (req, res) => {
       image: string | null
       shipping_address1: string | null
       shipping_address2: string | null
+      shipping_postal_code: string | null
+      shipping_city: string | null
+      shipping_region: string | null
       phone: string | null
       pudo_locker_name: string | null
       pudo_locker_address: string | null
@@ -562,6 +637,9 @@ router.post('/login', async (req, res) => {
           image,
           shipping_address1,
           shipping_address2,
+          shipping_postal_code,
+          shipping_city,
+          shipping_region,
           phone,
           pudo_locker_name,
           pudo_locker_address,
@@ -597,6 +675,9 @@ router.post('/login', async (req, res) => {
         profilePicture: user.image,
         shippingAddress: user.shipping_address1,
         shippingAddressLine2: user.shipping_address2,
+        shippingPostalCode: user.shipping_postal_code,
+        shippingCity: user.shipping_city,
+        shippingProvince: user.shipping_region,
         phone: user.phone,
         pudoLockerName: user.pudo_locker_name,
         pudoLockerAddress: user.pudo_locker_address,
@@ -1148,6 +1229,11 @@ router.patch('/profile-details', async (req, res) => {
   const nextName = str(b.fullName)
   const nextEmailRaw = str(b.email)
   const nextEmail = nextEmailRaw ? nextEmailRaw.toLowerCase() : undefined
+  const nextShippingAddress = str(b.shippingAddress)
+  const nextShippingAddressLine2 = str(b.shippingAddressLine2)
+  const nextShippingPostalCode = str(b.shippingPostalCode)
+  const nextShippingCity = str(b.shippingCity)
+  const nextShippingProvince = str(b.shippingProvince)
 
   if (nextName !== undefined && !nextName) {
     return res.status(400).json({ error: 'fullName cannot be empty' })
@@ -1157,6 +1243,16 @@ router.patch('/profile-details', async (req, res) => {
     if (!isValidEmail(nextEmail)) {
       return res.status(400).json({ error: 'Email address is invalid' })
     }
+  }
+  const shippingError = validateShippingAddressFields({
+    shippingAddress: nextShippingAddress,
+    shippingAddressLine2: nextShippingAddressLine2,
+    shippingPostalCode: nextShippingPostalCode,
+    shippingCity: nextShippingCity,
+    shippingProvince: nextShippingProvince,
+  })
+  if (shippingError) {
+    return res.status(400).json({ error: shippingError })
   }
 
   const sets: string[] = []
@@ -1170,8 +1266,11 @@ router.patch('/profile-details', async (req, res) => {
     i += 1
   }
 
-  add('shipping_address1', str(b.shippingAddress))
-  add('shipping_address2', str(b.shippingAddressLine2))
+  add('shipping_address1', nextShippingAddress)
+  add('shipping_address2', nextShippingAddressLine2)
+  add('shipping_postal_code', nextShippingPostalCode)
+  add('shipping_city', nextShippingCity)
+  add('shipping_region', nextShippingProvince)
   add('name', nextName)
   add('email', nextEmail)
   add('phone', str(b.phone))
@@ -1195,6 +1294,9 @@ router.patch('/profile-details', async (req, res) => {
       image: string | null
       shipping_address1: string | null
       shipping_address2: string | null
+      shipping_postal_code: string | null
+      shipping_city: string | null
+      shipping_region: string | null
       phone: string | null
       pudo_locker_name: string | null
       pudo_locker_address: string | null
@@ -1218,6 +1320,9 @@ router.patch('/profile-details', async (req, res) => {
           image,
           shipping_address1,
           shipping_address2,
+          shipping_postal_code,
+          shipping_city,
+          shipping_region,
           phone,
           pudo_locker_name,
           pudo_locker_address,
@@ -1257,6 +1362,9 @@ router.patch('/profile-details', async (req, res) => {
         profilePicture: user.image,
         shippingAddress: user.shipping_address1,
         shippingAddressLine2: user.shipping_address2,
+        shippingPostalCode: user.shipping_postal_code,
+        shippingCity: user.shipping_city,
+        shippingProvince: user.shipping_region,
         phone: user.phone,
         pudoLockerName: user.pudo_locker_name,
         pudoLockerAddress: user.pudo_locker_address,

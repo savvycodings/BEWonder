@@ -50,6 +50,9 @@ export async function getAuthUserFromRequest(req: Request) {
     image: string | null
     shipping_address1: string | null
     shipping_address2: string | null
+    shipping_postal_code: string | null
+    shipping_city: string | null
+    shipping_region: string | null
     phone: string | null
     pudo_locker_name: string | null
     pudo_locker_address: string | null
@@ -68,6 +71,9 @@ export async function getAuthUserFromRequest(req: Request) {
         to_jsonb(u)->>'image' AS image,
         to_jsonb(u)->>'shipping_address1' AS shipping_address1,
         to_jsonb(u)->>'shipping_address2' AS shipping_address2,
+        to_jsonb(u)->>'shipping_postal_code' AS shipping_postal_code,
+        to_jsonb(u)->>'shipping_city' AS shipping_city,
+        to_jsonb(u)->>'shipping_region' AS shipping_region,
         to_jsonb(u)->>'phone' AS phone,
         to_jsonb(u)->>'pudo_locker_name' AS pudo_locker_name,
         to_jsonb(u)->>'pudo_locker_address' AS pudo_locker_address,
@@ -102,6 +108,9 @@ export async function getAuthUserFromRequest(req: Request) {
       profilePicture: row.image,
       shippingAddress: row.shipping_address1,
       shippingAddressLine2: row.shipping_address2,
+      shippingPostalCode: row.shipping_postal_code,
+      shippingCity: row.shipping_city,
+      shippingProvince: row.shipping_region,
       phone: row.phone,
       pudoLockerName: row.pudo_locker_name,
       pudoLockerAddress: row.pudo_locker_address,
