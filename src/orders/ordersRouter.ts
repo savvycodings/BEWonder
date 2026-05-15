@@ -4,7 +4,8 @@ import { getAuthUserFromRequest } from '../auth/session'
 import { runQuery } from '../db/client'
 import { generateUniqueReferenceCode } from './referenceCode'
 import { centsToDecimalString, moneyStringToCents } from './money'
-import { createPeachCheckout, peachPaymentWidgetUrl } from './peachClient'
+import { createYocoCheckout } from './yocoClient'
+import { syncYocoOrderPayment } from './yocoSyncRoute'
 
 const router = express.Router()
 
@@ -83,8 +84,8 @@ router.post('/', async (req, res) => {
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
 
   const paymentMethod = String(req.body?.paymentMethod || '').toLowerCase()
-  if (paymentMethod !== 'peach' && paymentMethod !== 'eft') {
-    return res.status(400).json({ error: 'paymentMethod must be peach or eft' })
+  if (paymentMethod !== 'yoco' && paymentMethod !== 'eft') {
+    return res.status(400).json({ error: 'paymentMethod must be yoco or eft' })
   }
 
   const items = req.body?.items as LineInput[] | undefined
@@ -221,7 +222,7 @@ router.post('/', async (req, res) => {
         delivery_method, contact_phone, contact_email,
         pudo_locker_name, pudo_locker_address,
         customer_eft_account_name, customer_eft_bank_name, customer_eft_account_number,
-        peach_merchant_transaction_id, updated_at
+        updated_at
       )
       VALUES (
         $1, $2, $3, $4, $5,
@@ -230,7 +231,7 @@ router.post('/', async (req, res) => {
         $12, $13, $14,
         $15, $16,
         $17, $18, $19,
-        $2, NOW()
+        NOW()
       )
       RETURNING id
     `,
@@ -390,7 +391,7 @@ router.get('/:orderId', async (req, res) => {
     customer_eft_account_name: string | null
     customer_eft_bank_name: string | null
     customer_eft_account_number: string | null
-    peach_checkout_id: string | null
+    yoco_checkout_id: string | null
     eft_proof_image_url: string | null
     eft_customer_note: string | null
     created_at: string
@@ -403,7 +404,7 @@ router.get('/:orderId', async (req, res) => {
         delivery_method, contact_phone, contact_email,
         pudo_locker_name, pudo_locker_address,
         customer_eft_account_name, customer_eft_bank_name, customer_eft_account_number,
-        peach_checkout_id, eft_proof_image_url, eft_customer_note, created_at
+        yoco_checkout_id, eft_proof_image_url, eft_customer_note, created_at
       FROM orders
       WHERE id = $1 AND user_id = $2
       LIMIT 1
@@ -455,7 +456,7 @@ router.get('/:orderId', async (req, res) => {
       customerEftAccountName: order.customer_eft_account_name,
       customerEftBankName: order.customer_eft_bank_name,
       customerEftAccountNumber: order.customer_eft_account_number,
-      peachCheckoutId: order.peach_checkout_id,
+      yocoCheckoutId: order.yoco_checkout_id,
       eftProofImageUrl: order.eft_proof_image_url,
       eftCustomerNote: order.eft_customer_note,
       createdAt: order.created_at,
@@ -538,7 +539,7 @@ router.post('/:orderId/eft-proof', async (req, res) => {
   }
 })
 
-router.post('/:orderId/peach/init', async (req, res) => {
+router.post('/:orderId/yoco/init', async (req, res) => {
   const auth = await getAuthUserFromRequest(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const orderId = String(req.params.orderId || '').trim()
@@ -561,18 +562,21 @@ router.post('/:orderId/peach/init', async (req, res) => {
   )
   const order = orderRes.rows[0]
   if (!order) return res.status(404).json({ error: 'Order not found' })
-  if (order.payment_method !== 'peach') {
-    return res.status(400).json({ error: 'Order is not Peach' })
+  if (order.payment_method !== 'yoco') {
+    return res.status(400).json({ error: 'Order is not a Yoco card payment' })
   }
   if (order.status !== 'pending_payment') {
-    return res.status(400).json({ error: 'Order is not awaiting Peach payment' })
+    return res.status(400).json({ error: 'Order is not awaiting card payment' })
   }
 
-  const amountDecimal = centsToDecimalString(order.total_cents)
-  const checkout = await createPeachCheckout({
-    amountDecimal,
+  const returnBaseUrl = String(req.body?.returnBaseUrl || '').trim() || undefined
+  const checkout = await createYocoCheckout({
+    amountCents: order.total_cents,
     currency: order.currency_code,
-    merchantTransactionId: order.reference_code,
+    orderId: order.id,
+    referenceCode: order.reference_code,
+    idempotencyKey: `${order.id}:${Date.now()}`,
+    returnBaseUrl,
   })
 
   if (!checkout.ok) {
@@ -582,32 +586,42 @@ router.post('/:orderId/peach/init', async (req, res) => {
   await runQuery(
     `
       UPDATE orders
-      SET
-        peach_checkout_id = $2,
-        peach_resource_path = $3,
-        updated_at = NOW()
+      SET yoco_checkout_id = $2, updated_at = NOW()
       WHERE id = $1
     `,
-    [orderId, checkout.checkoutId, `/v1/checkouts/${checkout.checkoutId}`]
+    [orderId, checkout.checkoutId]
   )
 
   await runQuery(
     `
       INSERT INTO order_payment_events (order_id, provider, event_type, status_after, payload_json)
-      VALUES ($1, 'peach', 'checkout_init', 'pending_payment', $2::jsonb)
+      VALUES ($1, 'yoco', 'checkout_init', 'pending_payment', $2::jsonb)
     `,
-    [orderId, JSON.stringify({ checkoutId: checkout.checkoutId })]
+    [orderId, JSON.stringify({ checkoutId: checkout.checkoutId, redirectUrl: checkout.redirectUrl })]
   )
 
-  const widgetUrl = peachPaymentWidgetUrl(checkout.checkoutId)
+  const amountDecimal = centsToDecimalString(order.total_cents)
+  const processingMode = checkout.processingMode || 'unknown'
   return res.status(200).json({
     checkoutId: checkout.checkoutId,
-    widgetUrl,
-    ndc: checkout.ndc,
+    redirectUrl: checkout.redirectUrl,
     amount: amountDecimal,
     currency: order.currency_code,
-    merchantTransactionId: order.reference_code,
+    referenceCode: order.reference_code,
+    processingMode,
+    testMode: processingMode === 'test',
+    testPaymentHint:
+      processingMode === 'test'
+        ? 'Choose Card (not Google Pay). Enter exactly: 4111 1111 1111 1111 · Expiry 01/30 · CVC 123. Clear each field first if autofill shows other numbers. Minimum R2.00.'
+        : undefined,
   })
+})
+
+router.post('/:orderId/yoco/sync', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const orderId = String(req.params.orderId || '').trim()
+  return syncYocoOrderPayment(auth, orderId, res)
 })
 
 export default router

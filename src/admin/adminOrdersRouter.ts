@@ -41,7 +41,7 @@ router.get('/orders', requireAdmin, async (req, res) => {
 
   const params: unknown[] = [limit, offset]
   let where = ''
-  if (pm === 'peach' || pm === 'eft') {
+  if (pm === 'yoco' || pm === 'peach' || pm === 'eft') {
     where = 'WHERE o.payment_method = $3'
     params.push(pm)
   }
@@ -213,6 +213,8 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
     customer_eft_account_name: string | null
     customer_eft_bank_name: string | null
     customer_eft_account_number: string | null
+    yoco_checkout_id: string | null
+    yoco_payment_id: string | null
     peach_checkout_id: string | null
     peach_resource_path: string | null
     eft_proof_image_url: string | null
@@ -261,6 +263,8 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
         o.customer_eft_account_name,
         o.customer_eft_bank_name,
         o.customer_eft_account_number,
+        o.yoco_checkout_id,
+        o.yoco_payment_id,
         o.peach_checkout_id,
         o.peach_resource_path,
         o.eft_proof_image_url,
@@ -357,6 +361,8 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
       customerEftAccountName: order.customer_eft_account_name,
       customerEftBankName: order.customer_eft_bank_name,
       customerEftAccountNumber: order.customer_eft_account_number,
+      yocoCheckoutId: order.yoco_checkout_id,
+      yocoPaymentId: order.yoco_payment_id,
       peachCheckoutId: order.peach_checkout_id,
       peachResourcePath: order.peach_resource_path,
       eftProofImageUrl: order.eft_proof_image_url,

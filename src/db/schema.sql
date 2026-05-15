@@ -144,13 +144,15 @@ CREATE TABLE IF NOT EXISTS orders (
   peach_checkout_id TEXT,
   peach_resource_path TEXT,
   peach_merchant_transaction_id TEXT,
+  yoco_checkout_id TEXT,
+  yoco_payment_id TEXT,
   eft_proof_image_url TEXT,
   eft_customer_note TEXT,
   eft_marked_paid_at TIMESTAMPTZ,
   eft_verified_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT orders_payment_method_chk CHECK (payment_method IN ('peach', 'eft')),
+  CONSTRAINT orders_payment_method_chk CHECK (payment_method IN ('yoco', 'eft', 'peach')),
   CONSTRAINT orders_status_chk CHECK (
     status IN (
       'pending_payment',
@@ -164,8 +166,12 @@ CREATE TABLE IF NOT EXISTS orders (
   CONSTRAINT orders_reference_unique UNIQUE (reference_code)
 );
 
--- ZAR spend loyalty: wonder coins granted once when order becomes paid (see Peach webhook). NULL = not evaluated yet.
+-- ZAR spend loyalty: wonder coins granted once when order becomes paid (see Yoco webhook). NULL = not evaluated yet.
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS spend_loyalty_coins_awarded INTEGER;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS yoco_checkout_id TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS yoco_payment_id TEXT;
+ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_payment_method_chk;
+ALTER TABLE orders ADD CONSTRAINT orders_payment_method_chk CHECK (payment_method IN ('yoco', 'eft', 'peach'));
 
 -- ShipLogic / The Courier Guy fulfilment (see server/src/orders/tcgFulfillment.ts).
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_shipment_id TEXT;
