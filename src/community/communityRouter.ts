@@ -53,7 +53,7 @@ async function fetchRecentMessages(limit: number = 100) {
           u.image,
           u.avatar_frame
         FROM community_messages m
-        JOIN users u ON u.id = m.user_id
+        JOIN users u ON u.id::text = m.user_id
         ORDER BY m.created_at ASC
         LIMIT $1
       `,

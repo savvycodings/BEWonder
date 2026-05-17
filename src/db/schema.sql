@@ -268,6 +268,21 @@ CREATE TABLE IF NOT EXISTS user_redeem_codes (
 
 CREATE INDEX IF NOT EXISTS idx_user_redeem_codes_user_id ON user_redeem_codes (user_id);
 
+-- Password reset OTPs (forgot-password flow; see server/src/auth/passwordReset.ts).
+CREATE TABLE IF NOT EXISTS password_reset_otps (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT NOT NULL,
+  email TEXT NOT NULL,
+  otp_hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_otps_email ON password_reset_otps (email);
+CREATE INDEX IF NOT EXISTS idx_password_reset_otps_user_id ON password_reset_otps (user_id);
+CREATE INDEX IF NOT EXISTS idx_password_reset_otps_expires_at ON password_reset_otps (expires_at DESC);
+
 -- Order checkout snapshots (delivery choice, contact, customer bank for EFT matching)
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_method TEXT NOT NULL DEFAULT 'standard';
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS contact_phone TEXT;

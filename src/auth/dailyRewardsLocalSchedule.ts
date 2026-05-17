@@ -30,14 +30,6 @@ export async function fetchLocalDailyRewardSchedule(
   claimedCount: number,
   maxDays: number,
 ): Promise<LocalDailyRewardSchedule> {
-  const hasCompletedAll = claimedCount >= maxDays
-  if (hasCompletedAll) {
-    return { canClaimByLocalCalendar: false, nextUnlockAt: null }
-  }
-  if (claimedCount === 0) {
-    return { canClaimByLocalCalendar: true, nextUnlockAt: null }
-  }
-
   const run = async (tz: string): Promise<LocalDailyRewardSchedule> => {
     const r = await executor.query<{
       today_local: string
@@ -60,7 +52,10 @@ export async function fetchLocalDailyRewardSchedule(
     )
     const row = r.rows[0]
     if (!row) {
-      return { canClaimByLocalCalendar: false, nextUnlockAt: null }
+      return { canClaimByLocalCalendar: claimedCount === 0, nextUnlockAt: null }
+    }
+    if (!row.last_local) {
+      return { canClaimByLocalCalendar: true, nextUnlockAt: null }
     }
     const canClaimByLocalCalendar = row.today_local > row.last_local
     const nextUnlockAt =

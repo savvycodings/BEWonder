@@ -41,3 +41,27 @@ export async function runLoginStreakBump(
 ): Promise<void> {
   await executor.query(bumpLoginStreakSql(requireSevenDayComplete), [userId, timeZone])
 }
+
+/**
+ * Clears a broken streak when the user has not logged in on the previous local calendar day.
+ * (Last activity was 2+ days ago — missing one full day in between.)
+ */
+export function reconcileBrokenLoginStreakSql(): string {
+  return `
+    UPDATE user_daily_rewards d
+    SET
+      login_streak_count = 0,
+      updated_at = NOW()
+    WHERE d.user_id = $1
+      AND d.login_streak_last_calendar_date IS NOT NULL
+      AND d.login_streak_last_calendar_date < ((CURRENT_TIMESTAMP AT TIME ZONE $2)::date - INTERVAL '1 day')::date
+  `
+}
+
+export async function runLoginStreakReconcile(
+  executor: Pool | PoolClient,
+  userId: string,
+  timeZone: string,
+): Promise<void> {
+  await executor.query(reconcileBrokenLoginStreakSql(), [userId, timeZone])
+}

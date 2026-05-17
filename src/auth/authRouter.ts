@@ -19,14 +19,29 @@ import {
 } from './wonderJumpProgress'
 import { ALLOWED_AVATAR_FRAMES, normalizeStoredAvatarFrameId } from '../constants/avatarFrames'
 import { normalizeLegacyWonderBadgeId, WONDER_PROFILE_BADGE_IDS } from '../constants/wonderBadges'
-import { runLoginStreakBump } from './dailyRewardsStreak'
+import { runLoginStreakBump, runLoginStreakReconcile } from './dailyRewardsStreak'
+import {
+  DAILY_REWARD_AMOUNTS,
+  DAILY_REWARD_CYCLE_LENGTH,
+  buildDailyRewardItems,
+  cyclePositionForNextClaim,
+  rewardWindowStartDay as computeRewardWindowStartDay,
+} from './dailyRewardsCycle'
 import {
   fetchLocalDailyRewardSchedule,
   getClientTimeZoneFromRequest,
 } from './dailyRewardsLocalSchedule'
+import { hashPassword, verifyPassword } from './passwordCrypto'
+import {
+  getPasswordHashForUser,
+  requestPasswordResetOtp,
+  resetPasswordWithOtp,
+  updatePasswordHashForUser,
+  validateNewPasswordPair,
+  verifyPasswordResetOtp,
+} from './passwordReset'
 
 const router = express.Router()
-const DAILY_REWARD_AMOUNTS = [1, 2, 3, 4, 5, 6, 7]
 
 /** Wonder Store item ids → cost in wonder coins (server is source of truth). */
 const WONDER_STORE_ITEM_COSTS: Record<string, number> = {
@@ -128,39 +143,6 @@ function validateShippingAddressFields(fields: {
   return null
 }
 
-function hashPassword(password: string) {
-  const salt = crypto.randomBytes(16).toString('hex')
-  const iterations = 100000
-  const keyLength = 64
-  const digest = 'sha512'
-  const derivedKey = crypto
-    .pbkdf2Sync(password, salt, iterations, keyLength, digest)
-    .toString('hex')
-
-  return `${salt}:${iterations}:${digest}:${derivedKey}`
-}
-
-function verifyPassword(password: string, storedHash: string) {
-  const [salt, iterationsText, digest, storedDerivedKey] = storedHash.split(':')
-  if (!salt || !iterationsText || !digest || !storedDerivedKey) {
-    return false
-  }
-
-  const iterations = Number(iterationsText)
-  if (!Number.isFinite(iterations) || iterations <= 0) {
-    return false
-  }
-
-  const derivedKey = crypto
-    .pbkdf2Sync(password, salt, iterations, 64, digest)
-    .toString('hex')
-
-  return crypto.timingSafeEqual(
-    Buffer.from(derivedKey, 'hex'),
-    Buffer.from(storedDerivedKey, 'hex')
-  )
-}
-
 type DailyRewardRow = {
   claimed_count: number
   last_claimed_at: string
@@ -215,7 +197,7 @@ async function getPaidOrderCount(userId: string): Promise<number> {
 }
 
 async function buildDailyRewardApiPayload(userId: string, row: DailyRewardRow, timeZone: string) {
-  const maxDays = DAILY_REWARD_AMOUNTS.length
+  const maxDays = DAILY_REWARD_CYCLE_LENGTH
   const claimedCount = Math.max(0, Math.min(row.claimed_count, maxDays))
   const [wonderCoins, ownedStoreItemIds, paidOrderCount, wonderJumpRank, schedule] = await Promise.all([
     getUserWonderCoins(userId),
@@ -271,38 +253,31 @@ function getDailyRewardPayload(
   wonderJumpRank: number | null,
   schedule: { canClaimByLocalCalendar: boolean; nextUnlockAt: string | null },
 ) {
-  const maxDays = DAILY_REWARD_AMOUNTS.length
+  const maxDays = DAILY_REWARD_CYCLE_LENGTH
   const claimedCount = Math.max(0, Math.min(row.claimed_count, maxDays))
-  const hasCompletedAllRewards = claimedCount >= maxDays
-  const canClaim = !hasCompletedAllRewards && schedule.canClaimByLocalCalendar
-  const nextUnlockAt =
-    hasCompletedAllRewards || claimedCount === 0 ? null : schedule.nextUnlockAt
+  const canClaim = schedule.canClaimByLocalCalendar
+  const nextUnlockAt = claimedCount === 0 && canClaim ? null : schedule.nextUnlockAt
 
   const loginStreak =
     typeof row.login_streak_count === 'number' && Number.isFinite(row.login_streak_count)
       ? Math.max(0, Math.floor(row.login_streak_count))
       : 0
 
+  const windowStartDay = computeRewardWindowStartDay(loginStreak)
+
   return {
     walletBalance: wonderCoins,
     ownedStoreItemIds,
+    /** Claims completed in the current 7-day reward window (resets after each day-7 claim). */
     claimedCount,
-    /** Consecutive local-calendar-day streak (client `X-User-Timezone`; claims + Daily Rewards after day 7). */
+    /** Consecutive local-calendar-day login streak (keeps counting past day 7 for badges). */
     currentStreakDays: loginStreak,
+    rewardWindowStartDay: windowStartDay,
     paidOrderCount,
     wonderJumpRank,
     canClaim,
     nextUnlockAt,
-    rewards: DAILY_REWARD_AMOUNTS.map((amount, index) => {
-      const day = index + 1
-      let status: 'claimed' | 'unlocked' | 'locked' = 'locked'
-      if (day <= claimedCount) {
-        status = 'claimed'
-      } else if (day === claimedCount + 1 && canClaim) {
-        status = 'unlocked'
-      }
-      return { day, amount, status }
-    }),
+    rewards: buildDailyRewardItems(loginStreak, claimedCount, canClaim),
   }
 }
 
@@ -319,7 +294,7 @@ async function userEarnsProfileBadge(userId: string, badgeId: string): Promise<b
 
   switch (badgeId) {
     case 'badge:day7':
-      return claimed >= 7
+      return streak >= 7 || claimed >= 7
     case 'badge:day30':
       return streak >= 30
     case 'badge:day90':
@@ -805,15 +780,36 @@ router.get('/daily-rewards', async (req, res) => {
     if (!row) {
       return res.status(500).json({ error: 'Unable to load daily rewards' })
     }
-    const maxDays = DAILY_REWARD_AMOUNTS.length
+    const maxDays = DAILY_REWARD_CYCLE_LENGTH
     if (row.claimed_count >= maxDays) {
-      try {
-        await runLoginStreakBump(pool, auth.userId, true, tz)
-      } catch (e: any) {
-        if (e?.code !== '42703') throw e
-      }
-      row = (await ensureDailyRewardRow(auth.userId)) ?? row
+      await runQuery(
+        `
+          UPDATE user_daily_rewards
+          SET claimed_count = 0, updated_at = NOW()
+          WHERE user_id = $1 AND claimed_count >= $2
+        `,
+        [auth.userId, maxDays],
+      )
+      row = { ...row, claimed_count: 0 }
     }
+    try {
+      await runLoginStreakReconcile(pool, auth.userId, tz)
+      await runLoginStreakBump(pool, auth.userId, false, tz)
+      await runQuery(
+        `
+          UPDATE user_daily_rewards
+          SET login_streak_count = GREATEST(login_streak_count, LEAST(claimed_count, $2))
+          WHERE user_id = $1
+            AND claimed_count > 0
+            AND claimed_count <= $2
+            AND login_streak_count < LEAST(claimed_count, $2)
+        `,
+        [auth.userId, maxDays],
+      )
+    } catch (e: any) {
+      if (e?.code !== '42703') throw e
+    }
+    row = (await ensureDailyRewardRow(auth.userId)) ?? row
 
     return res.status(200).json(await buildDailyRewardApiPayload(auth.userId, row, tz))
   } catch (error) {
@@ -829,23 +825,43 @@ router.post('/daily-rewards/claim', async (req, res) => {
   }
 
   const userId = auth.userId
-  const maxDays = DAILY_REWARD_AMOUNTS.length
+  const maxDays = DAILY_REWARD_CYCLE_LENGTH
   const tz = getClientTimeZoneFromRequest(req)
 
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    await ensureDailyRewardRowTx(client, userId)
+    let beforeRow = await ensureDailyRewardRowTx(client, userId)
+    if (!beforeRow) {
+      await client.query('ROLLBACK')
+      return res.status(500).json({ error: 'Unable to load daily rewards' })
+    }
+    if (beforeRow.claimed_count >= maxDays) {
+      await client.query(
+        `
+          UPDATE user_daily_rewards
+          SET claimed_count = 0, updated_at = NOW()
+          WHERE user_id = $1 AND claimed_count >= $2
+        `,
+        [userId, maxDays],
+      )
+      beforeRow = { ...beforeRow, claimed_count: 0 }
+    }
+
+    const cycleDay = cyclePositionForNextClaim(beforeRow.claimed_count)
+    const coinsAdded = DAILY_REWARD_AMOUNTS[cycleDay - 1] ?? cycleDay
 
     const updateResult = await client.query<DailyRewardRow>(
       `
         UPDATE user_daily_rewards
         SET
-          claimed_count = LEAST(claimed_count + 1, $2),
+          claimed_count = CASE
+            WHEN claimed_count + 1 >= $2 THEN 0
+            ELSE claimed_count + 1
+          END,
           last_claimed_at = NOW(),
           updated_at = NOW()
         WHERE user_id = $1
-          AND claimed_count < $2
           AND (
             claimed_count = 0
             OR (last_claimed_at AT TIME ZONE $3)::date < (CURRENT_TIMESTAMP AT TIME ZONE $3)::date
@@ -868,9 +884,6 @@ router.post('/daily-rewards/claim', async (req, res) => {
       })
     }
 
-    const newClaimed = Math.max(1, Math.min(updatedRow.claimed_count, maxDays))
-    const coinsAdded = DAILY_REWARD_AMOUNTS[newClaimed - 1] ?? newClaimed
-
     await client.query(
       `
         UPDATE users
@@ -881,7 +894,19 @@ router.post('/daily-rewards/claim', async (req, res) => {
     )
 
     try {
+      // Bump only — do not reconcile here (reconcile on GET). Reconcile before bump on claim
+      // could zero the streak then restart at 1 while claimed_count keeps growing.
       await runLoginStreakBump(client, userId, false, tz)
+      await client.query(
+        `
+          UPDATE user_daily_rewards
+          SET login_streak_count = GREATEST(login_streak_count, LEAST(claimed_count, $2))
+          WHERE user_id = $1
+            AND claimed_count > 0
+            AND claimed_count <= $2
+        `,
+        [userId, maxDays],
+      )
     } catch (e: any) {
       if (e?.code !== '42703') throw e
     }
@@ -1389,6 +1414,133 @@ router.patch('/profile-details', async (req, res) => {
   }
 })
 
+router.post('/change-password', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  const currentPassword = String(req.body?.currentPassword ?? req.body?.oldPassword ?? '')
+  const newPassword = String(req.body?.newPassword ?? '')
+  const confirmNewPassword = String(req.body?.confirmNewPassword ?? req.body?.confirmPassword ?? '')
+
+  if (!currentPassword) {
+    return res.status(400).json({ error: 'Current password is required' })
+  }
+
+  const pairError = validateNewPasswordPair(newPassword, confirmNewPassword)
+  if (pairError) {
+    return res.status(400).json({ error: pairError })
+  }
+
+  if (newPassword === currentPassword) {
+    return res.status(400).json({ error: 'New password must be different from your current password' })
+  }
+
+  try {
+    const storedHash = await getPasswordHashForUser(pool, auth.userId)
+    if (!storedHash) {
+      return res.status(400).json({
+        error: 'This account does not use email/password sign-in.',
+      })
+    }
+    if (!verifyPassword(currentPassword, storedHash)) {
+      return res.status(401).json({ error: 'Current password is incorrect' })
+    }
+
+    const updated = await updatePasswordHashForUser(pool, auth.userId, hashPassword(newPassword))
+    if (!updated) {
+      return res.status(500).json({ error: 'Unable to update password' })
+    }
+
+    return res.status(200).json({ ok: true, message: 'Password updated.' })
+  } catch (error) {
+    console.error('Failed to change password', error)
+    return res.status(500).json({ error: 'Unable to change password' })
+  }
+})
+
+/** Forgot-password framework: request a one-time code by email. */
+router.post('/forgot-password/request', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  if (!email || !isValidEmail(email)) {
+    return res.status(400).json({ error: 'A valid email address is required' })
+  }
+
+  try {
+    const result = await requestPasswordResetOtp(email)
+    const body: Record<string, unknown> = {
+      ok: true,
+      message: 'If an account exists for this email, a verification code was sent.',
+    }
+    if (result.devOtpLogged && process.env.NODE_ENV !== 'production') {
+      body.devHint = 'OTP logged on the API server console (PASSWORD_RESET_LOG_OTP).'
+    }
+    return res.status(200).json(body)
+  } catch (error: any) {
+    if (error?.status === 503 || error?.code === '42P01') {
+      return res.status(503).json({
+        error: 'Password reset is not available yet',
+        detail: 'Run db:migrate to create password_reset_otps.',
+      })
+    }
+    console.error('Failed to request password reset', error)
+    return res.status(500).json({ error: 'Unable to process request' })
+  }
+})
+
+router.post('/forgot-password/verify', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  const otp = String(req.body?.otp || req.body?.code || '').trim()
+  if (!email || !otp) {
+    return res.status(400).json({ error: 'Email and verification code are required' })
+  }
+
+  try {
+    const valid = await verifyPasswordResetOtp(email, otp)
+    if (!valid) {
+      return res.status(400).json({ error: 'Invalid or expired verification code' })
+    }
+    return res.status(200).json({ ok: true })
+  } catch (error: any) {
+    if (error?.code === '42P01') {
+      return res.status(503).json({ error: 'Password reset is not available yet' })
+    }
+    console.error('Failed to verify password reset OTP', error)
+    return res.status(500).json({ error: 'Unable to verify code' })
+  }
+})
+
+router.post('/forgot-password/reset', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  const otp = String(req.body?.otp || req.body?.code || '').trim()
+  const newPassword = String(req.body?.newPassword ?? '')
+  const confirmNewPassword = String(req.body?.confirmNewPassword ?? req.body?.confirmPassword ?? '')
+
+  if (!email || !otp) {
+    return res.status(400).json({ error: 'Email and verification code are required' })
+  }
+
+  const pairError = validateNewPasswordPair(newPassword, confirmNewPassword)
+  if (pairError) {
+    return res.status(400).json({ error: pairError })
+  }
+
+  try {
+    const result = await resetPasswordWithOtp(email, otp, newPassword)
+    if (!result.ok) {
+      return res.status(result.status).json({ error: result.message })
+    }
+    return res.status(200).json({ ok: true, message: 'Password updated. You can sign in with your new password.' })
+  } catch (error: any) {
+    if (error?.code === '42P01') {
+      return res.status(503).json({ error: 'Password reset is not available yet' })
+    }
+    console.error('Failed to reset password', error)
+    return res.status(500).json({ error: 'Unable to reset password' })
+  }
+})
+
 router.patch('/avatar-frame', async (req, res) => {
   const auth = await getAuthUserFromRequest(req)
   if (!auth) {
@@ -1621,11 +1773,17 @@ router.get('/community/users/:userId/public', async (req, res) => {
     const result = await runQuery<{
       profile_banner_url: string | null
       profile_badge_slots: unknown
+      avatar_frame: string | null
+      image: string | null
     }>(
       `
-        SELECT profile_banner_url, profile_badge_slots
-        FROM users
-        WHERE id::text = $1
+        SELECT
+          profile_banner_url,
+          profile_badge_slots,
+          avatar_frame,
+          COALESCE(to_jsonb(u)->>'image', NULL) AS image
+        FROM users u
+        WHERE u.id::text = $1
         LIMIT 1
       `,
       [userId]
@@ -1635,6 +1793,8 @@ router.get('/community/users/:userId/public', async (req, res) => {
     return res.status(200).json({
       bannerUrl: normalizeProfileBannerUrl(row.profile_banner_url),
       badgeSlots: normalizeProfileBadgeSlots(row.profile_badge_slots),
+      avatarFrameId: normalizeStoredAvatarFrame(row.avatar_frame),
+      profilePicture: row.image?.trim() ? row.image : null,
       bio: null,
       tagline: null,
     })
