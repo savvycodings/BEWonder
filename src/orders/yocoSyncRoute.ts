@@ -6,6 +6,7 @@ import {
   type YocoOrderRow,
 } from './yocoApplyPayment'
 import { pool } from '../db/client'
+import { yocoLog, yocoLogError } from './yocoLog'
 
 /** Poll Yoco for checkout completion when webhooks are not configured (common in local dev). */
 export async function syncYocoOrderPayment(
@@ -45,9 +46,11 @@ export async function syncYocoOrderPayment(
       return res.status(400).json({ error: 'No Yoco checkout for this order — start payment first' })
     }
 
+    yocoLog('sync lookup', { orderId, yocoCheckoutId: order.yoco_checkout_id })
     const remote = await getYocoCheckout(order.yoco_checkout_id)
     if (!remote.ok) {
       await client.query('ROLLBACK')
+      yocoLogError('sync remote checkout failed', { orderId, error: remote.error })
       return res.status(503).json({ error: remote.error })
     }
 

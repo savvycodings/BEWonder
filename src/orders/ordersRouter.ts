@@ -5,6 +5,7 @@ import { runQuery } from '../db/client'
 import { generateUniqueReferenceCode } from './referenceCode'
 import { centsToDecimalString, moneyStringToCents } from './money'
 import { createYocoCheckout } from './yocoClient'
+import { yocoLog, yocoLogError } from './yocoLog'
 import { syncYocoOrderPayment } from './yocoSyncRoute'
 
 const router = express.Router()
@@ -543,6 +544,11 @@ router.post('/:orderId/yoco/init', async (req, res) => {
   const auth = await getAuthUserFromRequest(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const orderId = String(req.params.orderId || '').trim()
+  yocoLog('POST /orders/:orderId/yoco/init', {
+    orderId,
+    userId: auth.userId,
+    returnBaseUrl: String(req.body?.returnBaseUrl || '').trim() || null,
+  })
 
   const orderRes = await runQuery<{
     id: string
@@ -580,7 +586,18 @@ router.post('/:orderId/yoco/init', async (req, res) => {
   })
 
   if (!checkout.ok) {
-    return res.status(503).json({ error: checkout.error })
+    yocoLogError('yoco/init failed for order', {
+      orderId,
+      referenceCode: order.reference_code,
+      httpStatus: checkout.status,
+      error: checkout.error,
+      yocoBody: checkout.yocoBody,
+    })
+    const status = checkout.status && checkout.status >= 400 && checkout.status < 500 ? checkout.status : 503
+    return res.status(status).json({
+      error: checkout.error,
+      yocoStatus: checkout.status,
+    })
   }
 
   await runQuery(
@@ -602,6 +619,12 @@ router.post('/:orderId/yoco/init', async (req, res) => {
 
   const amountDecimal = centsToDecimalString(order.total_cents)
   const processingMode = checkout.processingMode || 'unknown'
+  yocoLog('yoco/init ok', {
+    orderId,
+    checkoutId: checkout.checkoutId,
+    processingMode,
+    totalCents: order.total_cents,
+  })
   return res.status(200).json({
     checkoutId: checkout.checkoutId,
     redirectUrl: checkout.redirectUrl,
@@ -621,6 +644,7 @@ router.post('/:orderId/yoco/sync', async (req, res) => {
   const auth = await getAuthUserFromRequest(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   const orderId = String(req.params.orderId || '').trim()
+  yocoLog('POST /orders/:orderId/yoco/sync', { orderId, userId: auth.userId })
   return syncYocoOrderPayment(auth, orderId, res)
 })
 

@@ -1,12 +1,77 @@
 import crypto from 'crypto'
+import { yocoLog } from './yocoLog'
 
 const REPLAY_TOLERANCE_SEC = 180
 
-function parseSignatureHeader(header: string): string | null {
-  const first = header.trim().split(/\s+/)[0]
-  if (!first) return null
-  const parts = first.split(',')
-  return parts.length >= 2 ? parts[1] : null
+function parseSignatureHeader(header: string): string[] {
+  const out: string[] = []
+  for (const part of header.trim().split(/\s+/)) {
+    const sig = part.split(',').pop()
+    if (sig) out.push(sig)
+  }
+  return out
+}
+
+/** Build candidate HMAC keys — Yoco portal may issue whsec_* (base64) or yoco_live_* (utf-8). */
+function webhookSecretKeyCandidates(secret: string): Buffer[] {
+  const candidates: Buffer[] = []
+  const seen = new Set<string>()
+
+  const add = (buf: Buffer) => {
+    const key = buf.toString('base64')
+    if (!buf.length || seen.has(key)) return
+    seen.add(key)
+    candidates.push(buf)
+  }
+
+  if (secret.startsWith('whsec_')) {
+    const payload = secret.slice('whsec_'.length)
+    try {
+      add(Buffer.from(payload, 'base64'))
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (secret.startsWith('yoco_live_') || secret.startsWith('yoco_test_')) {
+    add(Buffer.from(secret, 'utf-8'))
+    const afterPrefix = secret.replace(/^yoco_(live|test)_/, '')
+    if (afterPrefix) {
+      add(Buffer.from(afterPrefix, 'utf-8'))
+      const compact = afterPrefix.replace(/_/g, '')
+      if (/^[0-9a-f]+$/i.test(compact) && compact.length % 2 === 0) {
+        try {
+          add(Buffer.from(compact, 'hex'))
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  // Older docs: whsec_<base64> via split — wrong for yoco_live_* but kept for whsec_* keys
+  if (secret.startsWith('whsec_')) {
+    const legacyPayload = secret.split('_').slice(1).join('_')
+    try {
+      add(Buffer.from(legacyPayload, 'base64'))
+    } catch {
+      /* ignore */
+    }
+  }
+
+  add(Buffer.from(secret, 'utf-8'))
+  return candidates
+}
+
+function signaturesMatch(expectedB64: string, provided: string): boolean {
+  try {
+    const a = Buffer.from(expectedB64)
+    const b = Buffer.from(provided)
+    if (a.length !== b.length) return false
+    return crypto.timingSafeEqual(a, b)
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -19,7 +84,7 @@ export function verifyYocoWebhookSignature(params: {
   webhookTimestamp: string | undefined
   webhookSignature: string | undefined
   secret: string
-}): { ok: true } | { ok: false; reason: string } {
+}): { ok: true; strategy: string } | { ok: false; reason: string } {
   const { rawBody, webhookId, webhookTimestamp, webhookSignature, secret } = params
   if (!webhookId || !webhookTimestamp || !webhookSignature) {
     return { ok: false, reason: 'missing webhook headers' }
@@ -34,31 +99,39 @@ export function verifyYocoWebhookSignature(params: {
     return { ok: false, reason: 'webhook timestamp outside tolerance' }
   }
 
-  const providedSig = parseSignatureHeader(webhookSignature)
-  if (!providedSig) {
+  const providedSigs = parseSignatureHeader(webhookSignature)
+  if (!providedSigs.length) {
     return { ok: false, reason: 'invalid webhook-signature header' }
   }
 
-  let secretBytes: Buffer
-  try {
-    const rawSecret = secret.startsWith('whsec_') ? secret.slice('whsec_'.length) : secret
-    secretBytes = Buffer.from(rawSecret, 'base64')
-  } catch {
-    return { ok: false, reason: 'invalid webhook secret encoding' }
-  }
-
   const signedContent = `${webhookId}.${webhookTimestamp}.${rawBody}`
-  const expected = crypto.createHmac('sha256', secretBytes).update(signedContent).digest('base64')
+  const keyCandidates = webhookSecretKeyCandidates(secret)
 
-  try {
-    const a = Buffer.from(expected)
-    const b = Buffer.from(providedSig)
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-      return { ok: false, reason: 'signature mismatch' }
+  const strategies = [
+    'whsec_base64',
+    'yoco_utf8_full',
+    'yoco_utf8_after_prefix',
+    'yoco_hex_compact',
+    'whsec_legacy_join',
+    'utf8_raw',
+  ]
+
+  for (let i = 0; i < keyCandidates.length; i++) {
+    const keyBytes = keyCandidates[i]
+    const expected = crypto.createHmac('sha256', keyBytes).update(signedContent).digest('base64')
+    for (const provided of providedSigs) {
+      if (signaturesMatch(expected, provided)) {
+        const strategy = strategies[i] || `candidate_${i}`
+        yocoLog('webhook signature ok', { strategy, webhookId })
+        return { ok: true, strategy }
+      }
     }
-  } catch {
-    return { ok: false, reason: 'signature compare failed' }
   }
 
-  return { ok: true }
+  yocoLog('webhook signature mismatch', {
+    webhookId,
+    keyCandidatesTried: keyCandidates.length,
+    providedSignatures: providedSigs.length,
+  })
+  return { ok: false, reason: 'signature mismatch' }
 }

@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { pool } from '../db/client'
 import { verifyYocoWebhookSignature } from './yocoWebhookVerify'
 import { applyYocoPaymentToOrder, runYocoPaymentSideEffects } from './yocoApplyPayment'
+import { yocoLog, yocoLogError } from './yocoLog'
 
 type YocoWebhookEnvelope = {
   type?: string
@@ -43,6 +44,13 @@ export async function handleYocoWebhook(req: Request, res: Response) {
   const raw =
     req.body instanceof Buffer ? req.body.toString('utf8') : String(req.body || '')
   const webhookSecret = process.env.YOCO_WEBHOOK_SECRET?.trim()
+  yocoLog('POST /webhooks/yoco', {
+    bodyBytes: raw.length,
+    webhookId: readHeader(req, 'webhook-id'),
+    webhookTimestamp: readHeader(req, 'webhook-timestamp'),
+    applicationId: process.env.YOCO_APPLICATION_ID || null,
+    webhookSecretConfigured: Boolean(webhookSecret),
+  })
 
   if (webhookSecret) {
     const verified = verifyYocoWebhookSignature({
@@ -53,8 +61,8 @@ export async function handleYocoWebhook(req: Request, res: Response) {
       secret: webhookSecret,
     })
     if (!verified.ok) {
-      console.warn('[yoco webhook] signature rejected:', verified.reason)
-      return res.status(403).json({ ok: false })
+      yocoLogError('webhook signature rejected', { reason: verified.reason })
+      return res.status(403).json({ ok: false, reason: verified.reason })
     }
   } else if (process.env.NODE_ENV === 'production') {
     console.error('[yoco webhook] YOCO_WEBHOOK_SECRET not set in production')
@@ -75,7 +83,10 @@ export async function handleYocoWebhook(req: Request, res: Response) {
   const success = eventType === 'payment.succeeded'
   const failed = eventType === 'payment.failed'
 
+  yocoLog('webhook event', { eventType, success, failed })
+
   if (!success && !failed) {
+    yocoLog('webhook ignored — unhandled event type', { eventType })
     return res.status(200).json({ ok: true, ignored: true })
   }
 
