@@ -1,5 +1,7 @@
 import express from 'express'
 import { runQuery } from '../db/client'
+import { stockFieldsFromRow } from './inventory'
+import { classifyPurchaseMode } from './purchaseMode'
 
 const router = express.Router()
 
@@ -29,6 +31,16 @@ function resolvePackagePrices(
     single,
     set: hasDistinctSetPrice ? set : null,
   }
+}
+
+const IN_STOCK_SQL = `
+  AND COALESCE(p.available_for_sale, false) = true
+  AND COALESCE(p.total_inventory, 0) > 0
+`.trim()
+
+function mapProductStock(row: { total_inventory?: unknown; available_for_sale?: boolean | null }) {
+  const { totalInventory, availableForSale, inStock } = stockFieldsFromRow(row)
+  return { totalInventory, availableForSale, inStock }
 }
 
 router.get('/categories', async (_req, res) => {
@@ -140,6 +152,7 @@ router.get('/categories/:slug', async (req, res) => {
       ) v_max ON true
       WHERE c.handle = $1
         AND p.is_active = true
+        ${IN_STOCK_SQL}
       ORDER BY p.updated_at DESC NULLS LAST
     `,
     [slug]
@@ -156,6 +169,12 @@ router.get('/categories/:slug', async (req, res) => {
     products: productsResult.rows.map((row) => {
       const images: string[] = Array.isArray(row.images) ? row.images : row.images?.length ? row.images : []
       const featuredImageUrl = row.thumbnail_url || images[0] || null
+      const packagePrices = resolvePackagePrices(
+        row.variant_min_price,
+        row.variant_currency_code,
+        row.variant_max_price,
+        row.variant_currency_code
+      )
       return {
         id: String(row.id),
         shopifyId: row.shopify_id,
@@ -166,21 +185,13 @@ router.get('/categories/:slug', async (req, res) => {
         productType: row.product_type,
         featuredImageUrl,
         images,
-        availableForSale: row.available_for_sale,
-        totalInventory:
-          row.total_inventory == null || row.total_inventory === ''
-            ? null
-            : Number.parseFloat(String(row.total_inventory)),
         minPrice: toMoney(row.variant_min_price, row.variant_currency_code),
         maxPrice: toMoney(row.variant_max_price, row.variant_currency_code),
         price: toMoney(row.variant_min_price, row.variant_currency_code),
         compareAtPrice: null,
-        packagePrices: resolvePackagePrices(
-          row.variant_min_price,
-          row.variant_currency_code,
-          row.variant_max_price,
-          row.variant_currency_code
-        ),
+        packagePrices,
+        purchaseMode: classifyPurchaseMode(row.product_type, packagePrices),
+        ...mapProductStock(row),
       }
     }),
   })
@@ -238,6 +249,8 @@ router.get('/products', async (req, res) => {
       p.product_type,
       p.thumbnail_url,
       p.images,
+      p.available_for_sale,
+      p.total_inventory,
       v_min.price as variant_price,
       v_min.compare_at_price as variant_compare_at_price,
       v_min.currency_code as variant_currency_code,
@@ -260,6 +273,7 @@ router.get('/products', async (req, res) => {
       LIMIT 1
     ) v_max ON true
     ${whereSql}
+    ${IN_STOCK_SQL}
     ORDER BY ${orderBy}
     LIMIT $${limitIdx}
   `
@@ -273,6 +287,8 @@ router.get('/products', async (req, res) => {
     product_type: string | null
     thumbnail_url: string | null
     images: any
+    available_for_sale: boolean | null
+    total_inventory: any
     variant_price: any
     variant_compare_at_price: any
     variant_currency_code: string | null
@@ -285,6 +301,12 @@ router.get('/products', async (req, res) => {
     const images: string[] = Array.isArray(row.images) ? row.images : row.images?.length ? row.images : []
     const featuredImageUrl = row.thumbnail_url || images[0] || null
 
+    const packagePrices = resolvePackagePrices(
+      row.variant_price,
+      row.variant_currency_code,
+      row.variant_set_price,
+      row.variant_set_currency_code,
+    )
     return {
       id: String(row.id),
       handle: row.handle,
@@ -296,12 +318,9 @@ router.get('/products', async (req, res) => {
       images,
       price: toMoney(row.variant_price, row.variant_currency_code),
       compareAtPrice: toMoney(row.variant_compare_at_price, row.variant_currency_code),
-      packagePrices: resolvePackagePrices(
-        row.variant_price,
-        row.variant_currency_code,
-        row.variant_set_price,
-        row.variant_set_currency_code,
-      ),
+      packagePrices,
+      purchaseMode: classifyPurchaseMode(row.product_type, packagePrices),
+      ...mapProductStock(row),
     }
   })
 
@@ -321,6 +340,8 @@ router.get('/products/:handle', async (req, res) => {
     product_type: string | null
     thumbnail_url: string | null
     images: any
+    available_for_sale: boolean | null
+    total_inventory: any
     variant_price: any
     variant_compare_at_price: any
     variant_currency_code: string | null
@@ -338,6 +359,8 @@ router.get('/products/:handle', async (req, res) => {
         p.product_type,
         p.thumbnail_url,
         p.images,
+        p.available_for_sale,
+        p.total_inventory,
         v_min.price as variant_price,
         v_min.compare_at_price as variant_compare_at_price,
         v_min.currency_code as variant_currency_code,
@@ -371,6 +394,13 @@ router.get('/products/:handle', async (req, res) => {
   const images: string[] = Array.isArray(row.images) ? row.images : row.images?.length ? row.images : []
   const featuredImageUrl = row.thumbnail_url || images[0] || null
 
+  const packagePrices = resolvePackagePrices(
+    row.variant_price,
+    row.variant_currency_code,
+    row.variant_set_price,
+    row.variant_set_currency_code,
+  )
+
   return res.status(200).json({
     product: {
       id: String(row.id),
@@ -383,12 +413,9 @@ router.get('/products/:handle', async (req, res) => {
       images,
       price: toMoney(row.variant_price, row.variant_currency_code),
       compareAtPrice: toMoney(row.variant_compare_at_price, row.variant_currency_code),
-      packagePrices: resolvePackagePrices(
-        row.variant_price,
-        row.variant_currency_code,
-        row.variant_set_price,
-        row.variant_set_currency_code,
-      ),
+      packagePrices,
+      purchaseMode: classifyPurchaseMode(row.product_type, packagePrices),
+      ...mapProductStock(row),
     },
   })
 })
