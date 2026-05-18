@@ -6,7 +6,7 @@ export const WONDER_PROFILE_BADGE_IDS = new Set<string>([
   'badge:order1',
   'badge:order5',
   'badge:order10',
-  /** Legacy id — treated as gold (10 paid orders) and normalized to `badge:order10` on save. */
+  /** Legacy id — treated ads gold (10 paid orders) and normalized to `badge:order10` on save. */
   'badge:order20',
   'badge:heart',
   'badge:wj_top100',
