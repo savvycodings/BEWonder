@@ -1,6 +1,6 @@
 import { pool, runQuery } from '../db/client'
 
-const ALLOWED_BIOMES = new Set(['grassland', 'mushroom', 'tropical'])
+const ALLOWED_BIOMES = new Set(['grassland', 'mushroom', 'tropical', 'space'])
 
 export const WONDER_JUMP_CHEST_REWARD_COINS = 4
 
@@ -10,8 +10,46 @@ export const WONDER_JUMP_CHEST_PICKUP_INSTANT_UNLOCK_DEBUG = false
 export type WonderJumpProgressPayload = {
   highScore: number
   unlockedBiomes: string[]
+  bestBiomeReached: string
   chestDocked: boolean
   chestUnlocksAt: string | null
+}
+
+const BIOME_RANK: Record<string, number> = {
+  grassland: 0,
+  mushroom: 1,
+  tropical: 2,
+  space: 3,
+}
+
+function biomeRank(biome: string): number {
+  return BIOME_RANK[biome] ?? 0
+}
+
+function maxBiomeReached(a: string, b: string): string {
+  return biomeRank(a) >= biomeRank(b) ? a : b
+}
+
+function parseBestBiomeReached(raw: unknown): string {
+  if (typeof raw === 'string' && ALLOWED_BIOMES.has(raw)) return raw
+  return 'grassland'
+}
+
+/** Matches WonderJump `displayRunScore` bands (high_score is display points, not raw height). */
+const DISPLAY_SCORE_AT_TROPICAL = 300
+const DISPLAY_SCORE_SPACE_START = 700
+const DISPLAY_SCORE_MUSHROOM_START = 130
+
+function accentBiomeFromDisplayScore(displayScore: number): string {
+  const s = Math.floor(displayScore)
+  if (s >= DISPLAY_SCORE_SPACE_START) return 'space'
+  if (s >= DISPLAY_SCORE_AT_TROPICAL) return 'tropical'
+  if (s >= DISPLAY_SCORE_MUSHROOM_START) return 'mushroom'
+  return 'grassland'
+}
+
+function resolveBiomeReached(stored: unknown, displayScore: number): string {
+  return maxBiomeReached(parseBestBiomeReached(stored), accentBiomeFromDisplayScore(displayScore))
 }
 
 export type ClaimWonderJumpChestResult =
@@ -47,7 +85,7 @@ function filterAllowedBiomes(input: unknown): string[] {
 function parseBiomesFromDb(raw: unknown): string[] {
   const filtered = filterAllowedBiomes(raw)
   if (filtered.length > 0) return filtered
-  return ['grassland', 'mushroom', 'tropical']
+  return ['grassland']
 }
 
 export async function ensureWonderJumpProgressRow(userId: string) {
@@ -66,11 +104,17 @@ export async function getWonderJumpProgressForUser(userId: string): Promise<Wond
   const result = await runQuery<{
     high_score: number
     unlocked_biomes: unknown
+    best_biome_reached: unknown
     wonder_jump_chest_docked: unknown
     wonder_jump_chest_unlocks_at: unknown
   }>(
     `
-      SELECT high_score, unlocked_biomes, wonder_jump_chest_docked, wonder_jump_chest_unlocks_at
+      SELECT
+        high_score,
+        unlocked_biomes,
+        best_biome_reached,
+        wonder_jump_chest_docked,
+        wonder_jump_chest_unlocks_at
       FROM user_wonder_jump_progress
       WHERE user_id = $1
     `,
@@ -80,7 +124,8 @@ export async function getWonderJumpProgressForUser(userId: string): Promise<Wond
   if (!row) {
     return {
       highScore: 0,
-      unlockedBiomes: ['grassland', 'mushroom', 'tropical'],
+      unlockedBiomes: ['grassland'],
+      bestBiomeReached: 'grassland',
       chestDocked: false,
       chestUnlocksAt: null,
     }
@@ -88,6 +133,7 @@ export async function getWonderJumpProgressForUser(userId: string): Promise<Wond
   return {
     highScore: row.high_score,
     unlockedBiomes: parseBiomesFromDb(row.unlocked_biomes),
+    bestBiomeReached: parseBestBiomeReached(row.best_biome_reached),
     chestDocked: chestDockedToBool(row.wonder_jump_chest_docked),
     chestUnlocksAt: chestUnlocksAtToIso(row.wonder_jump_chest_unlocks_at),
   }
@@ -101,6 +147,7 @@ export type WonderJumpLeaderboardRow = {
   userId: string
   username: string
   score: number
+  biomeReached: string
 }
 
 /** Public leaderboard: display scores from `user_wonder_jump_progress` with readable names from `users`. */
@@ -110,6 +157,7 @@ export async function getWonderJumpLeaderboard(limit: number): Promise<WonderJum
     user_id: string
     score: number
     username: string
+    biome_reached: string
   }>(
     `
       SELECT
@@ -119,7 +167,8 @@ export async function getWonderJumpLeaderboard(limit: number): Promise<WonderJum
           NULLIF(TRIM(u.name), ''),
           SPLIT_PART(COALESCE(u.email, ''), '@', 1),
           'Player'
-        ) AS username
+        ) AS username,
+        COALESCE(NULLIF(TRIM(p.best_biome_reached), ''), 'grassland') AS biome_reached
       FROM user_wonder_jump_progress p
       LEFT JOIN users u ON u.id::text = p.user_id
       WHERE p.high_score > 0
@@ -132,6 +181,7 @@ export async function getWonderJumpLeaderboard(limit: number): Promise<WonderJum
     userId: row.user_id,
     username: row.username || 'Player',
     score: row.score,
+    biomeReached: resolveBiomeReached(row.biome_reached, row.score),
   }))
 }
 
@@ -169,7 +219,7 @@ export async function getWonderJumpLeaderboardRankForUser(userId: string): Promi
 
 export async function mergeWonderJumpProgressForUser(
   userId: string,
-  body: { highScore?: unknown; unlockedBiomes?: unknown }
+  body: { highScore?: unknown; unlockedBiomes?: unknown; bestBiomeReached?: unknown }
 ): Promise<WonderJumpProgressPayload> {
   const current = await getWonderJumpProgressForUser(userId)
 
@@ -185,16 +235,23 @@ export async function mergeWonderJumpProgressForUser(
   const nextBiomes =
     incomingBiomes.length > 0 ? mergeBiomes(current.unlockedBiomes, incomingBiomes) : current.unlockedBiomes
 
+  let nextBest = current.bestBiomeReached
+  if (body.bestBiomeReached !== undefined && body.bestBiomeReached !== null) {
+    nextBest = maxBiomeReached(current.bestBiomeReached, parseBestBiomeReached(body.bestBiomeReached))
+  }
+  nextBest = maxBiomeReached(nextBest, accentBiomeFromDisplayScore(nextHigh))
+
   await runQuery(
     `
       UPDATE user_wonder_jump_progress
       SET
         high_score = $2,
         unlocked_biomes = $3::jsonb,
+        best_biome_reached = $4,
         updated_at = NOW()
       WHERE user_id = $1
     `,
-    [userId, nextHigh, JSON.stringify(nextBiomes)]
+    [userId, nextHigh, JSON.stringify(nextBiomes), nextBest]
   )
 
   return getWonderJumpProgressForUser(userId)
