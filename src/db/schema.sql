@@ -298,9 +298,15 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_eft_account_number TEXT;
 CREATE TABLE IF NOT EXISTS user_wonder_jump_progress (
   user_id TEXT PRIMARY KEY,
   high_score INTEGER NOT NULL DEFAULT 0 CHECK (high_score >= 0),
-  unlocked_biomes JSONB NOT NULL DEFAULT '["grassland","mushroom","tropical"]'::jsonb,
+  unlocked_biomes JSONB NOT NULL DEFAULT '["grassland"]'::jsonb,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE user_wonder_jump_progress
+  ALTER COLUMN unlocked_biomes SET DEFAULT '["grassland"]'::jsonb;
+
+ALTER TABLE user_wonder_jump_progress
+  ADD COLUMN IF NOT EXISTS best_biome_reached TEXT NOT NULL DEFAULT 'grassland';
 
 CREATE INDEX IF NOT EXISTS idx_user_wonder_jump_progress_updated_at
   ON user_wonder_jump_progress (updated_at DESC);

@@ -4,6 +4,7 @@ import { getAuthUserFromRequest } from '../auth/session'
 import { runQuery } from '../db/client'
 import { generateUniqueReferenceCode } from './referenceCode'
 import { centsToDecimalString, moneyStringToCents } from './money'
+import { isProductInStock, parseTotalInventory, stockFieldsFromRow } from '../products/inventory'
 import { createYocoCheckout } from './yocoClient'
 import { yocoLog, yocoLogError } from './yocoLog'
 import { syncYocoOrderPayment } from './yocoSyncRoute'
@@ -29,6 +30,8 @@ type ProductRow = {
   images: unknown
   variant_price: unknown
   variant_currency_code: string | null
+  total_inventory: unknown
+  available_for_sale: boolean | null
 }
 
 async function loadProductForOrder(
@@ -45,6 +48,8 @@ async function loadProductForOrder(
         p.title,
         p.thumbnail_url,
         p.images,
+        p.total_inventory,
+        p.available_for_sale,
         v.price as variant_price,
         v.currency_code as variant_currency_code
       FROM products p
@@ -108,12 +113,30 @@ router.post('/', async (req, res) => {
   }[] = []
 
   let currency = ''
+  const demandByProductId = new Map<number, number>()
+  const productRowsById = new Map<number, ProductRow>()
   for (const raw of items) {
     const qty = Math.max(1, Math.min(99, Math.floor(Number(raw.quantity) || 0)))
     const packaging = raw.packaging === 'set' ? 'set' : 'single'
     const row = await loadProductForOrder(String(raw.productId), packaging)
     if (!row) {
       return res.status(400).json({ error: `Unknown product: ${raw.productId}` })
+    }
+    const { totalInventory, inStock } = stockFieldsFromRow(row)
+    if (!inStock) {
+      return res.status(400).json({ error: `${row.title} is out of stock` })
+    }
+    productRowsById.set(row.id, row)
+    const nextDemand = (demandByProductId.get(row.id) || 0) + qty
+    demandByProductId.set(row.id, nextDemand)
+    if (totalInventory != null && nextDemand > totalInventory) {
+      const left = totalInventory
+      return res.status(400).json({
+        error:
+          left === 0
+            ? `${row.title} is out of stock`
+            : `Only ${left} in stock for ${row.title}`,
+      })
     }
     const { cents, currency: cur } = moneyStringToCents(row.variant_price, row.variant_currency_code || 'USD')
     if (cents <= 0) {
@@ -133,6 +156,23 @@ router.post('/', async (req, res) => {
       lineTotal,
       imageUrl: featuredImage(row),
     })
+  }
+
+  for (const [productId, requestedQty] of demandByProductId) {
+    const row = productRowsById.get(productId)
+    if (!row) continue
+    const totalInventory = parseTotalInventory(row.total_inventory)
+    if (!isProductInStock(totalInventory, row.available_for_sale)) {
+      return res.status(400).json({ error: `${row.title} is out of stock` })
+    }
+    if (totalInventory != null && requestedQty > totalInventory) {
+      return res.status(400).json({
+        error:
+          totalInventory === 0
+            ? `${row.title} is out of stock`
+            : `Only ${totalInventory} in stock for ${row.title}`,
+      })
+    }
   }
 
   const subtotal = lines.reduce((s, l) => s + l.lineTotal, 0)
