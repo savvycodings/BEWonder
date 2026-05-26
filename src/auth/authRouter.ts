@@ -949,7 +949,7 @@ router.post('/daily-rewards/claim', async (req, res) => {
 /** Public: anyone can view WonderJump high scores (no session required). */
 router.get('/wonder-jump-leaderboard', async (req, res) => {
   const raw = Number(req.query.limit)
-  const limit = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 50
+  const limit = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 100
   try {
     const entries = await getWonderJumpLeaderboard(limit)
     return res.status(200).json({ entries })

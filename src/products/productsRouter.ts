@@ -57,10 +57,14 @@ router.get('/categories', async (_req, res) => {
         c.handle,
         c.title,
         c.image_url,
-        COUNT(cp.product_shopify_id)::int AS product_count
+        COUNT(p.shopify_id)::int AS product_count
       FROM collections c
       LEFT JOIN collection_products cp
         ON cp.collection_shopify_id = c.shopify_id
+      LEFT JOIN products p
+        ON p.shopify_id = cp.product_shopify_id
+        AND p.is_active = true
+        ${IN_STOCK_SQL}
       GROUP BY c.shopify_id, c.handle, c.title, c.image_url
       ORDER BY c.title ASC
     `
@@ -107,6 +111,7 @@ router.get('/categories/:slug', async (req, res) => {
     description_html: string | null
     vendor: string | null
     product_type: string | null
+    tags: string[] | null
     thumbnail_url: string | null
     images: any
     available_for_sale: boolean | null
@@ -124,6 +129,7 @@ router.get('/categories/:slug', async (req, res) => {
         p.description_html,
         p.vendor,
         p.product_type,
+        p.tags,
         p.thumbnail_url,
         p.images,
         p.available_for_sale,
@@ -183,6 +189,7 @@ router.get('/categories/:slug', async (req, res) => {
         descriptionHtml: row.description_html,
         vendor: row.vendor,
         productType: row.product_type,
+        tags: Array.isArray(row.tags) ? row.tags : [],
         featuredImageUrl,
         images,
         minPrice: toMoney(row.variant_min_price, row.variant_currency_code),
