@@ -48,10 +48,14 @@ async function fetchRecentMessages(limit: number = 100) {
           m.body,
           m.image_url,
           m.created_at,
-          u.id as user_id,
-          u.name,
-          u.image,
-          u.avatar_frame
+          u.id::text AS user_id,
+          COALESCE(
+            NULLIF(TRIM(to_jsonb(u)->>'name'), ''),
+            NULLIF(TRIM(to_jsonb(u)->>'full_name'), ''),
+            ''
+          ) AS name,
+          to_jsonb(u)->>'image' AS image,
+          to_jsonb(u)->>'avatar_frame' AS avatar_frame
         FROM community_messages m
         JOIN users u ON u.id::text = m.user_id
         ORDER BY m.created_at ASC
@@ -74,7 +78,8 @@ async function fetchRecentMessages(limit: number = 100) {
     }))
   } catch (error: any) {
     // If the DB doesn't have community tables yet, keep the server alive.
-    if (error?.code === '42P01') {
+    if (error?.code === '42P01' || error?.code === '42703') {
+      console.warn('[community] messages query skipped:', error?.message || error?.code)
       return []
     }
     throw error
@@ -82,13 +87,21 @@ async function fetchRecentMessages(limit: number = 100) {
 }
 
 router.get('/messages', async (req, res) => {
-  const auth = await getAuthUserFromRequest(req)
-  if (!auth) {
-    return res.status(401).json({ error: 'Unauthorized' })
-  }
+  try {
+    const auth = await getAuthUserFromRequest(req)
+    if (!auth) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
 
-  const messages = await fetchRecentMessages(200)
-  return res.status(200).json({ messages })
+    const messages = await fetchRecentMessages(200)
+    return res.status(200).json({ messages })
+  } catch (error: any) {
+    console.error('[community] GET /messages failed:', error)
+    return res.status(500).json({
+      error: 'Failed to load messages',
+      detail: error?.message || 'Unknown error',
+    })
+  }
 })
 
 router.post('/messages', async (req, res) => {
