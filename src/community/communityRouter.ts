@@ -54,8 +54,14 @@ async function fetchRecentMessages(limit: number = 100) {
             NULLIF(TRIM(to_jsonb(u)->>'full_name'), ''),
             ''
           ) AS name,
-          to_jsonb(u)->>'image' AS image,
-          to_jsonb(u)->>'avatar_frame' AS avatar_frame
+          COALESCE(
+            NULLIF(TRIM(u.profile_picture), ''),
+            NULLIF(TRIM(to_jsonb(u)->>'image'), '')
+          ) AS image,
+          COALESCE(
+            NULLIF(TRIM(u.avatar_frame), ''),
+            NULLIF(TRIM(to_jsonb(u)->>'avatar_frame'), '')
+          ) AS avatar_frame
         FROM community_messages m
         JOIN users u ON u.id::text = m.user_id
         ORDER BY m.created_at ASC

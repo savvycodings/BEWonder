@@ -18,6 +18,7 @@ import {
   startWonderJumpChestTimerForUser,
 } from './wonderJumpProgress'
 import { ALLOWED_AVATAR_FRAMES, normalizeStoredAvatarFrameId } from '../constants/avatarFrames'
+import { validateProfileDisplayName } from '../constants/profileDisplayName'
 import { normalizeLegacyWonderBadgeId, WONDER_PROFILE_BADGE_IDS } from '../constants/wonderBadges'
 import { runLoginStreakBump, runLoginStreakReconcile } from './dailyRewardsStreak'
 import {
@@ -40,8 +41,10 @@ import {
   validateNewPasswordPair,
   verifyPasswordResetOtp,
 } from './passwordReset'
+import { registerUserSavedProductRoutes } from './userSavedProductsRoutes'
 
 const router = express.Router()
+registerUserSavedProductRoutes(router)
 
 /** Wonder Store item ids → cost in wonder coins (server is source of truth). */
 const WONDER_STORE_ITEM_COSTS: Record<string, number> = {
@@ -349,6 +352,11 @@ router.post('/register', async (req, res) => {
     return res.status(400).json({
       error: 'fullName, email, and password are required',
     })
+  }
+
+  const fullNameError = validateProfileDisplayName(fullName)
+  if (fullNameError) {
+    return res.status(400).json({ error: fullNameError })
   }
 
   if (!phone) {
@@ -1260,8 +1268,11 @@ router.patch('/profile-details', async (req, res) => {
   const nextShippingCity = str(b.shippingCity)
   const nextShippingProvince = str(b.shippingProvince)
 
-  if (nextName !== undefined && !nextName) {
-    return res.status(400).json({ error: 'fullName cannot be empty' })
+  if (nextName !== undefined) {
+    const nameError = validateProfileDisplayName(nextName)
+    if (nameError) {
+      return res.status(400).json({ error: nameError })
+    }
   }
   if (nextEmail !== undefined) {
     if (!nextEmail) return res.status(400).json({ error: 'email cannot be empty' })
@@ -1780,8 +1791,14 @@ router.get('/community/users/:userId/public', async (req, res) => {
         SELECT
           profile_banner_url,
           profile_badge_slots,
-          avatar_frame,
-          COALESCE(to_jsonb(u)->>'image', NULL) AS image
+          COALESCE(
+            NULLIF(TRIM(u.avatar_frame), ''),
+            NULLIF(TRIM(to_jsonb(u)->>'avatar_frame'), '')
+          ) AS avatar_frame,
+          COALESCE(
+            NULLIF(TRIM(u.profile_picture), ''),
+            NULLIF(TRIM(to_jsonb(u)->>'image'), '')
+          ) AS image
         FROM users u
         WHERE u.id::text = $1
         LIMIT 1

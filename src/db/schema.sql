@@ -462,3 +462,13 @@ CREATE INDEX IF NOT EXISTS idx_accounts_provider_id ON accounts (provider_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
 CREATE INDEX IF NOT EXISTS idx_verifications_identifier ON verifications (identifier);
+
+CREATE TABLE IF NOT EXISTS user_saved_products (
+  user_id TEXT NOT NULL,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_saved_products_user_created
+  ON user_saved_products (user_id, created_at DESC);

@@ -88,6 +88,14 @@ function parseBiomesFromDb(raw: unknown): string[] {
   return ['grassland']
 }
 
+/** node-pg often returns COUNT/bigint as string — coerce before badge / rewards logic. */
+function coercePositiveInt(raw: unknown): number | null {
+  if (raw == null || raw === '') return null
+  const n = typeof raw === 'number' ? raw : Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return Math.floor(n)
+}
+
 export async function ensureWonderJumpProgressRow(userId: string) {
   await runQuery(
     `
@@ -213,8 +221,7 @@ export async function getWonderJumpLeaderboardRankForUser(userId: string): Promi
     `,
     [userId]
   )
-  const rank = result.rows[0]?.rank
-  return typeof rank === 'number' && Number.isFinite(rank) ? rank : null
+  return coercePositiveInt(result.rows[0]?.rank)
 }
 
 export async function mergeWonderJumpProgressForUser(
