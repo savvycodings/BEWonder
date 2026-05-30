@@ -1,4 +1,13 @@
 import { getTcgConfig } from './tcgConfig'
+import {
+  buildShippingProfile,
+  combineParcelProfiles,
+  defaultParcelFromEnv,
+  defaultSetParcelFromEnv,
+  type ShippingProfile,
+  shippingProfileToApi,
+} from '../products/shippingDimensions'
+import { parcelDimensionsForCustomerTier, type PudoLockerTier } from './pudoLockerPricing'
 
 type Cfg = ReturnType<typeof getTcgConfig>
 
@@ -14,13 +23,22 @@ export type OrderShipmentRow = {
   shipping_snapshot_line2: string | null
   pudo_locker_name: string | null
   pudo_locker_address: string | null
+  pudo_locker_tier: string | null
   tcg_shipment_id: string | null
 }
 
 export type OrderLineRow = {
   title: string
   quantity: number
+  packaging?: string | null
+  length_cm?: number | null
+  width_cm?: number | null
+  height_cm?: number | null
+  weight_kg?: number | null
+  locker_tier?: string | null
 }
+
+export type ComputedParcel = ShippingProfile
 
 function todayMinDate(): string {
   const d = new Date()
@@ -36,6 +54,58 @@ function parcelDescription(lines: OrderLineRow[]): string {
     .join('; ')
     .trim()
   return s.slice(0, 240) || 'WonderPort order'
+}
+
+function lineShippingProfile(line: OrderLineRow): ShippingProfile {
+  const packaging = line.packaging === 'set' ? 'set' : 'single'
+  const fallback = packaging === 'set' ? defaultSetParcelFromEnv() : defaultParcelFromEnv()
+  return buildShippingProfile(
+    {
+      lengthCm: numOrUndef(line.length_cm),
+      widthCm: numOrUndef(line.width_cm),
+      heightCm: numOrUndef(line.height_cm),
+      weightKg: numOrUndef(line.weight_kg),
+    },
+    fallback
+  )
+}
+
+function numOrUndef(v: unknown): number | undefined {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
+export function computeParcelForOrder(lines: OrderLineRow[], cfg: Cfg): ComputedParcel {
+  if (!lines.length) {
+    return buildShippingProfile({}, {
+      lengthCm: cfg.parcel.lengthCm,
+      widthCm: cfg.parcel.widthCm,
+      heightCm: cfg.parcel.heightCm,
+      weightKg: cfg.parcel.weightKg,
+    })
+  }
+
+  const profiles = lines.map((line) => lineShippingProfile(line))
+  const quantities = lines.map((line) => line.quantity)
+  const combined = combineParcelProfiles(profiles, quantities)
+
+  if (
+    combined.lengthCm === defaultParcelFromEnv().lengthCm &&
+    combined.widthCm === defaultParcelFromEnv().widthCm &&
+    !lines.some((l) => l.length_cm || l.weight_kg)
+  ) {
+    return buildShippingProfile(
+      {
+        lengthCm: cfg.parcel.lengthCm,
+        widthCm: cfg.parcel.widthCm,
+        heightCm: cfg.parcel.heightCm,
+        weightKg: cfg.parcel.weightKg,
+      },
+      combined
+    )
+  }
+
+  return combined
 }
 
 function deliveryContact(order: OrderShipmentRow): { name: string; mobile_number: string; email: string } {
@@ -84,27 +154,36 @@ function sharedDatesAndWindows() {
   }
 }
 
-function parcels(cfg: Cfg, lines: OrderLineRow[]) {
+function parcels(cfg: Cfg, lines: OrderLineRow[], customerTier?: PudoLockerTier | null) {
+  const parcel = customerTier
+    ? buildShippingProfile(parcelDimensionsForCustomerTier(customerTier), defaultParcelFromEnv())
+    : computeParcelForOrder(lines, cfg)
   return [
     {
       parcel_description: parcelDescription(lines),
-      submitted_length_cm: cfg.parcel.lengthCm,
-      submitted_width_cm: cfg.parcel.widthCm,
-      submitted_height_cm: cfg.parcel.heightCm,
-      submitted_weight_kg: cfg.parcel.weightKg,
+      submitted_length_cm: parcel.lengthCm,
+      submitted_width_cm: parcel.widthCm,
+      submitted_height_cm: parcel.heightCm,
+      submitted_weight_kg: parcel.weightKg,
     },
   ]
 }
 
-export function buildTcgRatesBody(order: OrderShipmentRow, lines: OrderLineRow[], cfg: Cfg): Record<string, unknown> {
+export function buildTcgRatesBody(
+  order: OrderShipmentRow,
+  lines: OrderLineRow[],
+  cfg: Cfg,
+  customerTier?: PudoLockerTier | null
+): Record<string, unknown> {
   const base: Record<string, unknown> = {
     ...collectionBlock(cfg),
     ...sharedDatesAndWindows(),
-    parcels: parcels(cfg, lines),
+    parcels: parcels(cfg, lines, customerTier),
   }
 
   if (order.delivery_method === 'pudo' && cfg.pudoDeliveryPickupPointId) {
     base.delivery_pickup_point_id = cfg.pudoDeliveryPickupPointId
+    base.delivery_pickup_point_provider = 'tcg-locker'
   } else {
     base.delivery_address = doorDeliveryAddress(order)
   }
@@ -141,13 +220,14 @@ export function buildTcgShipmentBody(
   order: OrderShipmentRow,
   lines: OrderLineRow[],
   cfg: Cfg,
-  serviceLevelCode: string
+  serviceLevelCode: string,
+  customerTier?: PudoLockerTier | null
 ): Record<string, unknown> {
   const dc = deliveryContact(order)
   const base: Record<string, unknown> = {
     ...collectionBlock(cfg),
     ...sharedDatesAndWindows(),
-    parcels: parcels(cfg, lines),
+    parcels: parcels(cfg, lines, customerTier),
     service_level_code: serviceLevelCode,
     customer_reference: order.reference_code,
     customer_reference_name: 'WonderPort order',
@@ -164,6 +244,7 @@ export function buildTcgShipmentBody(
     return {
       ...base,
       delivery_pickup_point_id: cfg.pudoDeliveryPickupPointId,
+      delivery_pickup_point_provider: 'tcg-locker',
       delivery_contact: {
         name: dc.name,
         mobile_number: dc.mobile_number,
@@ -199,4 +280,15 @@ export function pickServiceLevelCodeFromRatesJson(data: unknown): string | null 
     if (typeof code === 'string' && code.trim()) return code.trim()
   }
   return null
+}
+
+export function parcelSnapshotFromLines(lines: OrderLineRow[], cfg: Cfg) {
+  const parcel = computeParcelForOrder(lines, cfg)
+  return {
+    ...shippingProfileToApi(parcel),
+    lengthCm: parcel.lengthCm,
+    widthCm: parcel.widthCm,
+    heightCm: parcel.heightCm,
+    weightKg: parcel.weightKg,
+  }
 }

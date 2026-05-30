@@ -4,6 +4,7 @@ import { requireAdmin, signAdminJwt, verifyAdminPassword } from './adminAuth'
 import { applySpendLoyaltyForNewlyPaidOrder } from '../orders/orderSpendLoyalty'
 import { createTcgShipmentForPaidOrderIfNeeded } from '../orders/tcgFulfillment'
 import { tcgConfigReadyForShipment } from '../orders/tcgConfig'
+import { pudoLockerTierLabel } from '../orders/pudoLockerPricing'
 
 const router = express.Router()
 
@@ -53,6 +54,10 @@ router.get('/orders', requireAdmin, async (req, res) => {
     payment_method: string
     currency_code: string
     total_cents: number
+    shipping_cents: number
+    delivery_method: string | null
+    pudo_locker_tier: string | null
+    pudo_locker_name: string | null
     created_at: string
     user_id: string
     email: string | null
@@ -66,6 +71,10 @@ router.get('/orders', requireAdmin, async (req, res) => {
         o.payment_method,
         o.currency_code,
         o.total_cents,
+        o.shipping_cents,
+        o.delivery_method,
+        o.pudo_locker_tier,
+        o.pudo_locker_name,
         o.created_at,
         o.user_id,
         u.email,
@@ -87,6 +96,11 @@ router.get('/orders', requireAdmin, async (req, res) => {
       paymentMethod: r.payment_method,
       currencyCode: r.currency_code,
       totalCents: r.total_cents,
+      shippingCents: r.shipping_cents,
+      deliveryMethod: r.delivery_method || 'pudo',
+      pudoLockerTier: r.pudo_locker_tier,
+      pudoLockerTierLabel: pudoLockerTierLabel(r.pudo_locker_tier),
+      pudoLockerName: r.pudo_locker_name,
       createdAt: r.created_at,
       userId: r.user_id,
       userEmail: r.email,
@@ -109,6 +123,7 @@ router.get('/users/:userId/orders', requireAdmin, async (req, res) => {
     phone: string | null
     pudo_locker_name: string | null
     pudo_locker_address: string | null
+    pudo_locker_tier: string | null
     eft_bank_account_name: string | null
     eft_bank_name: string | null
     eft_bank_account_number: string | null
@@ -147,10 +162,14 @@ router.get('/users/:userId/orders', requireAdmin, async (req, res) => {
     payment_method: string
     currency_code: string
     total_cents: number
+    shipping_cents: number
+    pudo_locker_tier: string | null
+    pudo_locker_name: string | null
     created_at: string
   }>(
     `
-      SELECT id, reference_code, status, payment_method, currency_code, total_cents, created_at
+      SELECT id, reference_code, status, payment_method, currency_code, total_cents,
+             shipping_cents, pudo_locker_tier, pudo_locker_name, created_at
       FROM orders
       WHERE user_id = $1
       ORDER BY created_at DESC
@@ -183,6 +202,10 @@ router.get('/users/:userId/orders', requireAdmin, async (req, res) => {
       paymentMethod: o.payment_method,
       currencyCode: o.currency_code,
       totalCents: o.total_cents,
+      shippingCents: o.shipping_cents,
+      pudoLockerTier: o.pudo_locker_tier,
+      pudoLockerTierLabel: pudoLockerTierLabel(o.pudo_locker_tier),
+      pudoLockerName: o.pudo_locker_name,
       createdAt: o.created_at,
     })),
   })
@@ -210,6 +233,7 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
     contact_email: string | null
     pudo_locker_name: string | null
     pudo_locker_address: string | null
+    pudo_locker_tier: string | null
     customer_eft_account_name: string | null
     customer_eft_bank_name: string | null
     customer_eft_account_number: string | null
@@ -227,6 +251,11 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
     tcg_shipment_status: string | null
     tcg_last_sync_at: string | null
     tcg_last_error: string | null
+    tcg_locker_tier: string | null
+    tcg_parcel_length_cm: number | null
+    tcg_parcel_width_cm: number | null
+    tcg_parcel_height_cm: number | null
+    tcg_parcel_weight_kg: number | null
     created_at: string
     email: string | null
     name: string | null
@@ -260,6 +289,7 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
         o.contact_email,
         o.pudo_locker_name,
         o.pudo_locker_address,
+        o.pudo_locker_tier,
         o.customer_eft_account_name,
         o.customer_eft_bank_name,
         o.customer_eft_account_number,
@@ -277,6 +307,11 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
         o.tcg_shipment_status,
         o.tcg_last_sync_at,
         o.tcg_last_error,
+        o.tcg_locker_tier,
+        o.tcg_parcel_length_cm,
+        o.tcg_parcel_width_cm,
+        o.tcg_parcel_height_cm,
+        o.tcg_parcel_weight_kg,
         o.created_at,
         u.email,
         u.name,
@@ -309,9 +344,10 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
     quantity: number
     line_total_cents: number
     image_url: string | null
+    packaging: string | null
   }>(
     `
-      SELECT id, product_id, title, unit_price_cents, currency_code, quantity, line_total_cents, image_url
+      SELECT id, product_id, title, unit_price_cents, currency_code, quantity, line_total_cents, image_url, packaging
       FROM order_line_items
       WHERE order_id = $1
       ORDER BY created_at ASC
@@ -353,11 +389,13 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
         line1: order.shipping_snapshot_line1,
         line2: order.shipping_snapshot_line2,
       },
-      deliveryMethod: order.delivery_method || 'standard',
+      deliveryMethod: order.delivery_method || 'pudo',
       contactPhone: order.contact_phone,
       contactEmail: order.contact_email,
       pudoLockerName: order.pudo_locker_name,
       pudoLockerAddress: order.pudo_locker_address,
+      pudoLockerTier: order.pudo_locker_tier,
+      pudoLockerTierLabel: pudoLockerTierLabel(order.pudo_locker_tier),
       customerEftAccountName: order.customer_eft_account_name,
       customerEftBankName: order.customer_eft_bank_name,
       customerEftAccountNumber: order.customer_eft_account_number,
@@ -375,6 +413,12 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
       tcgShipmentStatus: order.tcg_shipment_status,
       tcgLastSyncAt: order.tcg_last_sync_at,
       tcgLastError: order.tcg_last_error,
+      tcgBookedLockerTier: order.tcg_locker_tier,
+      tcgBookedLockerTierLabel: pudoLockerTierLabel(order.tcg_locker_tier),
+      tcgParcelLengthCm: order.tcg_parcel_length_cm,
+      tcgParcelWidthCm: order.tcg_parcel_width_cm,
+      tcgParcelHeightCm: order.tcg_parcel_height_cm,
+      tcgParcelWeightKg: order.tcg_parcel_weight_kg,
       createdAt: order.created_at,
     },
     user: {
@@ -400,6 +444,7 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
       quantity: l.quantity,
       lineTotalCents: l.line_total_cents,
       imageUrl: l.image_url,
+      packaging: l.packaging,
     })),
     paymentEvents: events.rows.map((e) => ({
       id: e.id,

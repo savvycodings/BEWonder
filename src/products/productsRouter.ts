@@ -1,47 +1,16 @@
 import express from 'express'
 import { runQuery } from '../db/client'
-import { stockFieldsFromRow } from './inventory'
-import { classifyPurchaseMode } from './purchaseMode'
+import {
+  mapProductPayload,
+  PRODUCT_SHIPPING_SELECT,
+} from './mapProductPayload'
 
 const router = express.Router()
-
-type Money = { amount: string; currencyCode: string }
-
-function toMoney(amount: any, currencyCode: any): Money | null {
-  if (amount === null || amount === undefined) return null
-  return {
-    amount: String(amount),
-    currencyCode: String(currencyCode || 'USD'),
-  }
-}
-
-function resolvePackagePrices(
-  minAmount: any,
-  minCurrency: string | null,
-  maxAmount: any,
-  maxCurrency: string | null,
-) {
-  const single = toMoney(minAmount, minCurrency)
-  const set = toMoney(maxAmount, maxCurrency || minCurrency)
-  const minNum = Number.parseFloat(String(minAmount))
-  const maxNum = Number.parseFloat(String(maxAmount))
-  const hasDistinctSetPrice =
-    Number.isFinite(minNum) && Number.isFinite(maxNum) && maxNum > minNum
-  return {
-    single,
-    set: hasDistinctSetPrice ? set : null,
-  }
-}
 
 const IN_STOCK_SQL = `
   AND COALESCE(p.available_for_sale, false) = true
   AND COALESCE(p.total_inventory, 0) > 0
 `.trim()
-
-function mapProductStock(row: { total_inventory?: unknown; available_for_sale?: boolean | null }) {
-  const { totalInventory, availableForSale, inStock } = stockFieldsFromRow(row)
-  return { totalInventory, availableForSale, inStock }
-}
 
 router.get('/categories', async (_req, res) => {
   const result = await runQuery<{
@@ -113,12 +82,17 @@ router.get('/categories/:slug', async (req, res) => {
     product_type: string | null
     tags: string[] | null
     thumbnail_url: string | null
-    images: any
+    images: unknown
     available_for_sale: boolean | null
-    total_inventory: any
-    variant_min_price: any
-    variant_max_price: any
+    total_inventory: unknown
+    variant_min_price: unknown
+    variant_max_price: unknown
     variant_currency_code: string | null
+    length_cm: unknown
+    width_cm: unknown
+    height_cm: unknown
+    weight_kg: unknown
+    locker_tier: unknown
   }>(
     `
       SELECT
@@ -136,7 +110,8 @@ router.get('/categories/:slug', async (req, res) => {
         p.total_inventory,
         v_min.price AS variant_min_price,
         v_max.price AS variant_max_price,
-        COALESCE(v_min.currency_code, v_max.currency_code, 'USD') AS variant_currency_code
+        COALESCE(v_min.currency_code, v_max.currency_code, 'USD') AS variant_currency_code,
+        ${PRODUCT_SHIPPING_SELECT}
       FROM collections c
       JOIN collection_products cp
         ON cp.collection_shopify_id = c.shopify_id
@@ -172,35 +147,15 @@ router.get('/categories/:slug', async (req, res) => {
       imageUrl: cat.image_url,
       description: cat.description,
     },
-    products: productsResult.rows.map((row) => {
-      const images: string[] = Array.isArray(row.images) ? row.images : row.images?.length ? row.images : []
-      const featuredImageUrl = row.thumbnail_url || images[0] || null
-      const packagePrices = resolvePackagePrices(
-        row.variant_min_price,
-        row.variant_currency_code,
-        row.variant_max_price,
-        row.variant_currency_code
-      )
-      return {
-        id: String(row.id),
-        shopifyId: row.shopify_id,
-        handle: row.handle,
-        title: row.title,
-        descriptionHtml: row.description_html,
-        vendor: row.vendor,
-        productType: row.product_type,
-        tags: Array.isArray(row.tags) ? row.tags : [],
-        featuredImageUrl,
-        images,
-        minPrice: toMoney(row.variant_min_price, row.variant_currency_code),
-        maxPrice: toMoney(row.variant_max_price, row.variant_currency_code),
-        price: toMoney(row.variant_min_price, row.variant_currency_code),
-        compareAtPrice: null,
-        packagePrices,
-        purchaseMode: classifyPurchaseMode(row.product_type, packagePrices),
-        ...mapProductStock(row),
-      }
-    }),
+    products: productsResult.rows.map((row) =>
+      mapProductPayload({
+        ...row,
+        variant_price: row.variant_min_price,
+        variant_set_price: row.variant_max_price,
+        variant_currency_code: row.variant_currency_code,
+        variant_set_currency_code: row.variant_currency_code,
+      })
+    ),
   })
 })
 
@@ -244,8 +199,6 @@ router.get('/products', async (req, res) => {
   params.push(first)
   const limitIdx = params.length
 
-  const whereSql = `WHERE ${conditions.join(' AND ')}`
-
   const sql = `
     SELECT
       p.id,
@@ -263,7 +216,8 @@ router.get('/products', async (req, res) => {
       v_min.currency_code as variant_currency_code,
       v_max.price as variant_set_price,
       v_max.compare_at_price as variant_set_compare_at_price,
-      v_max.currency_code as variant_set_currency_code
+      v_max.currency_code as variant_set_currency_code,
+      ${PRODUCT_SHIPPING_SELECT}
     FROM products p
     LEFT JOIN LATERAL (
       SELECT price, compare_at_price, currency_code
@@ -279,86 +233,27 @@ router.get('/products', async (req, res) => {
       ORDER BY price DESC NULLS LAST
       LIMIT 1
     ) v_max ON true
-    ${whereSql}
+    WHERE ${conditions.join(' AND ')}
     ${IN_STOCK_SQL}
     ORDER BY ${orderBy}
     LIMIT $${limitIdx}
   `
 
-  const result = await runQuery<{
-    id: number
-    handle: string
-    title: string
-    description_html: string | null
-    vendor: string | null
-    product_type: string | null
-    thumbnail_url: string | null
-    images: any
-    available_for_sale: boolean | null
-    total_inventory: any
-    variant_price: any
-    variant_compare_at_price: any
-    variant_currency_code: string | null
-    variant_set_price: any
-    variant_set_compare_at_price: any
-    variant_set_currency_code: string | null
-  }>(sql, params)
-
-  const products = result.rows.map((row) => {
-    const images: string[] = Array.isArray(row.images) ? row.images : row.images?.length ? row.images : []
-    const featuredImageUrl = row.thumbnail_url || images[0] || null
-
-    const packagePrices = resolvePackagePrices(
-      row.variant_price,
-      row.variant_currency_code,
-      row.variant_set_price,
-      row.variant_set_currency_code,
-    )
-    return {
-      id: String(row.id),
-      handle: row.handle,
-      title: row.title,
-      descriptionHtml: row.description_html,
-      vendor: row.vendor,
-      productType: row.product_type,
-      featuredImageUrl,
-      images,
-      price: toMoney(row.variant_price, row.variant_currency_code),
-      compareAtPrice: toMoney(row.variant_compare_at_price, row.variant_currency_code),
-      packagePrices,
-      purchaseMode: classifyPurchaseMode(row.product_type, packagePrices),
-      ...mapProductStock(row),
-    }
+  const result = await runQuery(sql, params)
+  return res.status(200).json({
+    products: result.rows.map((row) => mapProductPayload(row as any)),
   })
-
-  return res.status(200).json({ products })
 })
 
 router.get('/products/:handle', async (req, res) => {
   const handle = String(req.params.handle || '').trim()
   if (!handle) return res.status(400).json({ error: 'handle is required' })
 
-  const result = await runQuery<{
-    id: number
-    handle: string
-    title: string
-    description_html: string | null
-    vendor: string | null
-    product_type: string | null
-    thumbnail_url: string | null
-    images: any
-    available_for_sale: boolean | null
-    total_inventory: any
-    variant_price: any
-    variant_compare_at_price: any
-    variant_currency_code: string | null
-    variant_set_price: any
-    variant_set_compare_at_price: any
-    variant_set_currency_code: string | null
-  }>(
+  const result = await runQuery(
     `
       SELECT
         p.id,
+        p.shopify_id,
         p.handle,
         p.title,
         p.description_html,
@@ -373,7 +268,8 @@ router.get('/products/:handle', async (req, res) => {
         v_min.currency_code as variant_currency_code,
         v_max.price as variant_set_price,
         v_max.compare_at_price as variant_set_compare_at_price,
-        v_max.currency_code as variant_set_currency_code
+        v_max.currency_code as variant_set_currency_code,
+        ${PRODUCT_SHIPPING_SELECT}
       FROM products p
       LEFT JOIN LATERAL (
         SELECT price, compare_at_price, currency_code
@@ -395,37 +291,61 @@ router.get('/products/:handle', async (req, res) => {
     [handle]
   )
 
-  const row = result.rows[0]
+  const row = result.rows[0] as any
   if (!row) return res.status(404).json({ error: 'Product not found' })
 
-  const images: string[] = Array.isArray(row.images) ? row.images : row.images?.length ? row.images : []
-  const featuredImageUrl = row.thumbnail_url || images[0] || null
-
-  const packagePrices = resolvePackagePrices(
-    row.variant_price,
-    row.variant_currency_code,
-    row.variant_set_price,
-    row.variant_set_currency_code,
+  const variantsResult = await runQuery<{
+    shopify_id: string
+    title: string
+    sku: string | null
+    price: unknown
+    compare_at_price: unknown
+    currency_code: string | null
+    packaging: string | null
+    length_cm: unknown
+    width_cm: unknown
+    height_cm: unknown
+    weight_kg: unknown
+    locker_tier: unknown
+  }>(
+    `
+      SELECT
+        shopify_id, title, sku, price, compare_at_price, currency_code, packaging,
+        length_cm, width_cm, height_cm, weight_kg, locker_tier
+      FROM product_variants
+      WHERE product_id = $1
+      ORDER BY price ASC NULLS LAST
+    `,
+    [row.id]
   )
 
   return res.status(200).json({
     product: {
-      id: String(row.id),
-      handle: row.handle,
-      title: row.title,
-      descriptionHtml: row.description_html,
-      vendor: row.vendor,
-      productType: row.product_type,
-      featuredImageUrl,
-      images,
-      price: toMoney(row.variant_price, row.variant_currency_code),
-      compareAtPrice: toMoney(row.variant_compare_at_price, row.variant_currency_code),
-      packagePrices,
-      purchaseMode: classifyPurchaseMode(row.product_type, packagePrices),
-      ...mapProductStock(row),
+      ...mapProductPayload(row),
+      variants: variantsResult.rows.map((v) => ({
+        shopifyId: v.shopify_id,
+        title: v.title,
+        sku: v.sku,
+        packaging: v.packaging,
+        price: v.price != null ? { amount: String(v.price), currencyCode: v.currency_code || 'ZAR' } : null,
+        compareAtPrice:
+          v.compare_at_price != null
+            ? { amount: String(v.compare_at_price), currencyCode: v.currency_code || 'ZAR' }
+            : null,
+        shipping:
+          v.length_cm || v.width_cm || v.height_cm || v.weight_kg
+            ? {
+                lengthCm: Number(v.length_cm) || null,
+                widthCm: Number(v.width_cm) || null,
+                heightCm: Number(v.height_cm) || null,
+                weightKg: Number(v.weight_kg) || null,
+                lockerTier: v.locker_tier,
+                pudoEligible: v.locker_tier !== 'oversize',
+              }
+            : null,
+      })),
     },
   })
 })
 
 export default router
-

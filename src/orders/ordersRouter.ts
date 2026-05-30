@@ -5,17 +5,20 @@ import { runQuery } from '../db/client'
 import { generateUniqueReferenceCode } from './referenceCode'
 import { centsToDecimalString, moneyStringToCents } from './money'
 import { isProductInStock, parseTotalInventory, stockFieldsFromRow } from '../products/inventory'
+import {
+  isValidPudoLockerTier,
+  orderHasWholeSetLine,
+  pudoLockerTierForSetOnly,
+  shippingCentsForPudoTier,
+  type PudoLockerTier,
+} from './pudoLockerPricing'
 import { createYocoCheckout } from './yocoClient'
 import { yocoLog, yocoLogError } from './yocoLog'
 import { syncYocoOrderPayment } from './yocoSyncRoute'
 
 const router = express.Router()
 
-/** South Africa domestic tiers (order currency must be ZAR). */
-const SHIPPING_PUDO_CENTS_ZAR = 7000
-/** Per cart line unit: courier single vs whole set (matches app cart summary). */
-const SHIPPING_STANDARD_SINGLE_CENTS_ZAR = 15000
-const SHIPPING_STANDARD_SET_CENTS_ZAR = 20000
+/** South Africa domestic Pudo locker tiers (order currency must be ZAR). */
 
 type LineInput = { productId: string; quantity: number; packaging?: 'single' | 'set' }
 
@@ -32,6 +35,16 @@ type ProductRow = {
   variant_currency_code: string | null
   total_inventory: unknown
   available_for_sale: boolean | null
+  length_cm: unknown
+  width_cm: unknown
+  height_cm: unknown
+  weight_kg: unknown
+  locker_tier: unknown
+  variant_length_cm: unknown
+  variant_width_cm: unknown
+  variant_height_cm: unknown
+  variant_weight_kg: unknown
+  variant_locker_tier: unknown
 }
 
 async function loadProductForOrder(
@@ -50,11 +63,21 @@ async function loadProductForOrder(
         p.images,
         p.total_inventory,
         p.available_for_sale,
+        p.length_cm,
+        p.width_cm,
+        p.height_cm,
+        p.weight_kg,
+        p.locker_tier,
         v.price as variant_price,
-        v.currency_code as variant_currency_code
+        v.currency_code as variant_currency_code,
+        v.length_cm AS variant_length_cm,
+        v.width_cm AS variant_width_cm,
+        v.height_cm AS variant_height_cm,
+        v.weight_kg AS variant_weight_kg,
+        v.locker_tier AS variant_locker_tier
       FROM products p
       LEFT JOIN LATERAL (
-        SELECT price, currency_code
+        SELECT price, currency_code, length_cm, width_cm, height_cm, weight_kg, locker_tier
         FROM product_variants
         WHERE product_id = p.id
         ORDER BY price ${orderDirection} NULLS LAST
@@ -110,6 +133,7 @@ router.post('/', async (req, res) => {
     qty: number
     lineTotal: number
     imageUrl: string | null
+    packaging: 'single' | 'set'
   }[] = []
 
   let currency = ''
@@ -155,6 +179,7 @@ router.post('/', async (req, res) => {
       qty,
       lineTotal,
       imageUrl: featuredImage(row),
+      packaging,
     })
   }
 
@@ -177,10 +202,14 @@ router.post('/', async (req, res) => {
 
   const subtotal = lines.reduce((s, l) => s + l.lineTotal, 0)
 
-  const deliveryMethod = String(req.body?.deliveryMethod || 'standard').toLowerCase()
-  if (deliveryMethod !== 'pudo' && deliveryMethod !== 'standard') {
-    return res.status(400).json({ error: 'deliveryMethod must be pudo or standard' })
+  const deliveryMethod = 'pudo'
+  const pudoLockerTierRaw = String(req.body?.pudoLockerTier || '').trim().toLowerCase()
+  if (!isValidPudoLockerTier(pudoLockerTierRaw)) {
+    return res.status(400).json({
+      error: 'pudoLockerTier is required (xs, s, m, l, or xl)',
+    })
   }
+  const pudoLockerTier = pudoLockerTierRaw as PudoLockerTier
 
   const contactPhone = String(req.body?.contactPhone || '').trim()
   const contactEmailRaw = String(req.body?.contactEmail || '').trim().toLowerCase()
@@ -195,17 +224,18 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'contactEmail must be a valid email address' })
   }
 
-  const shippingAddressFull = String(req.body?.shippingAddressFull || '').trim()
-  const shippingAddressLine2Order = String(req.body?.shippingAddressLine2 || '').trim()
   const pudoLockerName = String(req.body?.pudoLockerName || '').trim()
   const pudoLockerAddress = String(req.body?.pudoLockerAddress || '').trim()
 
-  if (deliveryMethod === 'standard' && !shippingAddressFull) {
-    return res.status(400).json({ error: 'shippingAddressFull is required for courier delivery' })
-  }
-  if (deliveryMethod === 'pudo' && (!pudoLockerName || !pudoLockerAddress)) {
+  if (!pudoLockerName || !pudoLockerAddress) {
     return res.status(400).json({
       error: 'pudoLockerName and pudoLockerAddress are required for Pudo locker delivery',
+    })
+  }
+
+  if (orderHasWholeSetLine(lines) && !pudoLockerTierForSetOnly(pudoLockerTier)) {
+    return res.status(400).json({
+      error: 'Whole set orders require a Large or Extra large Pudo locker.',
     })
   }
 
@@ -215,23 +245,10 @@ router.post('/', async (req, res) => {
 
   let shippingCents = 0
   if (currency === 'ZAR') {
-    if (deliveryMethod === 'pudo') {
-      shippingCents = SHIPPING_PUDO_CENTS_ZAR
-    } else {
-      for (const raw of items) {
-        const qty = Math.max(1, Math.min(99, Math.floor(Number(raw.quantity) || 0)))
-        const packaging = raw.packaging === 'set' ? 'set' : 'single'
-        const perUnit =
-          packaging === 'set'
-            ? SHIPPING_STANDARD_SET_CENTS_ZAR
-            : SHIPPING_STANDARD_SINGLE_CENTS_ZAR
-        shippingCents += perUnit * qty
-      }
-    }
+    shippingCents = shippingCentsForPudoTier(pudoLockerTier)
   } else {
     return res.status(400).json({
-      error:
-        'Domestic shipping (Pudo R70 flat; courier R150/R200 per line by packaging) applies to ZAR-priced items only',
+      error: 'Domestic Pudo locker shipping applies to ZAR-priced items only',
       detail: `This cart is priced in ${currency}.`,
     })
   }
@@ -241,18 +258,11 @@ router.post('/', async (req, res) => {
 
   const referenceCode = await generateUniqueReferenceCode()
   const shipName = auth.user.fullName || ''
-  let ship1: string | null = null
-  let ship2: string | null = null
-  if (deliveryMethod === 'standard') {
-    ship1 = shippingAddressFull
-    ship2 = shippingAddressLine2Order || null
-  } else {
-    ship1 = `Pudo locker: ${pudoLockerName}`
-    ship2 = pudoLockerAddress
-  }
+  const ship1 = `Pudo locker: ${pudoLockerName}`
+  const ship2 = pudoLockerAddress
 
-  const orderPudoName = deliveryMethod === 'pudo' ? pudoLockerName : null
-  const orderPudoAddr = deliveryMethod === 'pudo' ? pudoLockerAddress : null
+  const orderPudoName = pudoLockerName
+  const orderPudoAddr = pudoLockerAddress
 
   const insert = await runQuery<{ id: string }>(
     `
@@ -261,7 +271,7 @@ router.post('/', async (req, res) => {
         subtotal_cents, shipping_cents, total_cents,
         shipping_snapshot_name, shipping_snapshot_line1, shipping_snapshot_line2,
         delivery_method, contact_phone, contact_email,
-        pudo_locker_name, pudo_locker_address,
+        pudo_locker_name, pudo_locker_address, pudo_locker_tier,
         customer_eft_account_name, customer_eft_bank_name, customer_eft_account_number,
         updated_at
       )
@@ -270,8 +280,8 @@ router.post('/', async (req, res) => {
         $6, $7, $8,
         $9, $10, $11,
         $12, $13, $14,
-        $15, $16,
-        $17, $18, $19,
+        $15, $16, $17,
+        $18, $19, $20,
         NOW()
       )
       RETURNING id
@@ -293,6 +303,7 @@ router.post('/', async (req, res) => {
       contactEmail,
       orderPudoName,
       orderPudoAddr,
+      pudoLockerTier,
       customerEftAccountName || null,
       customerEftBankName || null,
       customerEftAccountNumber || null,
@@ -307,8 +318,8 @@ router.post('/', async (req, res) => {
     await runQuery(
       `
         INSERT INTO order_line_items (
-          order_id, product_id, title, unit_price_cents, currency_code, quantity, line_total_cents, image_url
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          order_id, product_id, title, unit_price_cents, currency_code, quantity, line_total_cents, image_url, packaging
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       `,
       [
         orderId,
@@ -319,6 +330,7 @@ router.post('/', async (req, res) => {
         line.qty,
         line.lineTotal,
         line.imageUrl,
+        line.packaging,
       ]
     )
   }
@@ -429,6 +441,7 @@ router.get('/:orderId', async (req, res) => {
     contact_email: string | null
     pudo_locker_name: string | null
     pudo_locker_address: string | null
+    pudo_locker_tier: string | null
     customer_eft_account_name: string | null
     customer_eft_bank_name: string | null
     customer_eft_account_number: string | null
@@ -443,7 +456,7 @@ router.get('/:orderId', async (req, res) => {
         subtotal_cents, shipping_cents, total_cents,
         shipping_snapshot_name, shipping_snapshot_line1, shipping_snapshot_line2,
         delivery_method, contact_phone, contact_email,
-        pudo_locker_name, pudo_locker_address,
+        pudo_locker_name, pudo_locker_address, pudo_locker_tier,
         customer_eft_account_name, customer_eft_bank_name, customer_eft_account_number,
         yoco_checkout_id, eft_proof_image_url, eft_customer_note, created_at
       FROM orders
@@ -489,11 +502,12 @@ router.get('/:orderId', async (req, res) => {
         line1: order.shipping_snapshot_line1,
         line2: order.shipping_snapshot_line2,
       },
-      deliveryMethod: order.delivery_method || 'standard',
+      deliveryMethod: order.delivery_method || 'pudo',
       contactPhone: order.contact_phone,
       contactEmail: order.contact_email,
       pudoLockerName: order.pudo_locker_name,
       pudoLockerAddress: order.pudo_locker_address,
+      pudoLockerTier: order.pudo_locker_tier,
       customerEftAccountName: order.customer_eft_account_name,
       customerEftBankName: order.customer_eft_bank_name,
       customerEftAccountNumber: order.customer_eft_account_number,

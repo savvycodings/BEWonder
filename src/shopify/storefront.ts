@@ -39,7 +39,7 @@ function getStorefrontConfig() {
   return { endpoint, token }
 }
 
-async function storefrontRequest<T>(query: string, variables: Record<string, any>) {
+export async function storefrontRequest<T>(query: string, variables: Record<string, any>) {
   const { endpoint, token } = getStorefrontConfig()
 
   const resp = await fetch(endpoint, {

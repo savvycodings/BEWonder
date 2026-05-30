@@ -367,6 +367,11 @@ CREATE TABLE IF NOT EXISTS products (
   available_for_sale BOOLEAN,
   options JSONB,
   images JSONB,
+  length_cm NUMERIC,
+  width_cm NUMERIC,
+  height_cm NUMERIC,
+  weight_kg NUMERIC,
+  locker_tier TEXT,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   updated_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -386,6 +391,12 @@ CREATE TABLE IF NOT EXISTS product_variants (
   quantity_available NUMERIC,
   position NUMERIC,
   selected_options JSONB,
+  length_cm NUMERIC,
+  width_cm NUMERIC,
+  height_cm NUMERIC,
+  weight_kg NUMERIC,
+  locker_tier TEXT,
+  packaging TEXT,
   updated_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -408,6 +419,30 @@ CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products (updated_at DESC)
 CREATE INDEX IF NOT EXISTS idx_products_created_at ON products (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_product_variants_product_id ON product_variants (product_id);
 CREATE INDEX IF NOT EXISTS idx_product_variants_shopify_id ON product_variants (shopify_id);
+
+ALTER TABLE products ADD COLUMN IF NOT EXISTS length_cm NUMERIC;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS width_cm NUMERIC;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS height_cm NUMERIC;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS weight_kg NUMERIC;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS locker_tier TEXT;
+
+ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS length_cm NUMERIC;
+ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS width_cm NUMERIC;
+ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS height_cm NUMERIC;
+ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS weight_kg NUMERIC;
+ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS locker_tier TEXT;
+ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS packaging TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_product_variants_packaging ON product_variants (product_id, packaging);
+
+ALTER TABLE order_line_items ADD COLUMN IF NOT EXISTS packaging TEXT;
+
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_locker_tier TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS pudo_locker_tier TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_parcel_length_cm NUMERIC;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_parcel_width_cm NUMERIC;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_parcel_height_cm NUMERIC;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_parcel_weight_kg NUMERIC;
 CREATE INDEX IF NOT EXISTS idx_inventory_events_variant_shopify_id ON inventory_events (variant_shopify_id);
 CREATE INDEX IF NOT EXISTS idx_inventory_events_occurred_at ON inventory_events (occurred_at DESC);
 
