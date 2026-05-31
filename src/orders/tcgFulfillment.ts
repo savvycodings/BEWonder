@@ -1,6 +1,10 @@
 import { pool } from '../db/client'
 import { getTcgConfig, tcgConfigReadyForShipment } from './tcgConfig'
-import { isValidPudoLockerTier, parcelDimensionsForCustomerTier, type PudoLockerTier } from './pudoLockerPricing'
+import {
+  isKnownPudoLockerTier,
+  parcelDimensionsForCustomerTier,
+  type PudoLockerTier,
+} from './pudoLockerPricing'
 import { tcgPostJson } from './tcgClient'
 import {
   buildTcgRatesBody,
@@ -115,7 +119,7 @@ export async function createTcgShipmentForPaidOrderIfNeeded(orderId: string): Pr
     lines = lres.rows
 
     const tierRaw = String(order.pudo_locker_tier || '').toLowerCase()
-    const customerTier = isValidPudoLockerTier(tierRaw) ? (tierRaw as PudoLockerTier) : null
+    const customerTier = isKnownPudoLockerTier(tierRaw) ? tierRaw : null
     const parcelSnapshot = customerTier
       ? (() => {
           const dims = parcelDimensionsForCustomerTier(customerTier)
@@ -130,8 +134,19 @@ export async function createTcgShipmentForPaidOrderIfNeeded(orderId: string): Pr
         })()
       : parcelSnapshotFromLines(lines, cfg)
 
-    const serviceLevel = await resolveServiceLevelCode(order, lines, cfg, customerTier)
-    const shipmentBody = buildTcgShipmentBody(order, lines, cfg, serviceLevel, customerTier)
+    const serviceLevel = await resolveServiceLevelCode(
+      order,
+      lines,
+      cfg,
+      customerTier as PudoLockerTier | null,
+    )
+    const shipmentBody = buildTcgShipmentBody(
+      order,
+      lines,
+      cfg,
+      serviceLevel,
+      customerTier as PudoLockerTier | null,
+    )
 
     const shipRes = await tcgPostJson<Record<string, unknown>>('/shipments', shipmentBody)
     if (!shipRes.ok) {

@@ -206,7 +206,7 @@ router.post('/', async (req, res) => {
   const pudoLockerTierRaw = String(req.body?.pudoLockerTier || '').trim().toLowerCase()
   if (!isValidPudoLockerTier(pudoLockerTierRaw)) {
     return res.status(400).json({
-      error: 'pudoLockerTier is required (xs, s, m, l, or xl)',
+      error: 'pudoLockerTier is required (locker or door)',
     })
   }
   const pudoLockerTier = pudoLockerTierRaw as PudoLockerTier
@@ -235,7 +235,7 @@ router.post('/', async (req, res) => {
 
   if (orderHasWholeSetLine(lines) && !pudoLockerTierForSetOnly(pudoLockerTier)) {
     return res.status(400).json({
-      error: 'Whole set orders require a Large or Extra large Pudo locker.',
+      error: 'Whole set orders require door delivery (R110).',
     })
   }
 

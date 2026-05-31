@@ -41,6 +41,12 @@ import {
   validateNewPasswordPair,
   verifyPasswordResetOtp,
 } from './passwordReset'
+import {
+  consumeSignupEmailVerification,
+  requestEmailOtp,
+  verifyEmailOtp,
+  type EmailOtpPurpose,
+} from './emailOtp'
 import { registerUserSavedProductRoutes } from './userSavedProductsRoutes'
 
 const router = express.Router()
@@ -373,6 +379,15 @@ router.post('/register', async (req, res) => {
     })
   }
 
+  if (process.env.AUTH_REQUIRE_SIGNUP_EMAIL_VERIFY === 'true') {
+    const verified = await consumeSignupEmailVerification(email)
+    if (!verified) {
+      return res.status(400).json({
+        error: 'Verify your email with the 6-digit code before creating an account.',
+      })
+    }
+  }
+
   if (password.length < 8) {
     return res.status(400).json({
       error: 'Password must be at least 8 characters',
@@ -552,6 +567,183 @@ router.post('/register', async (req, res) => {
     return res.status(500).json({
       error: 'Unable to create user',
     })
+  }
+})
+
+function parseEmailOtpPurpose(raw: unknown): EmailOtpPurpose | null {
+  const p = String(raw || '').trim().toLowerCase()
+  if (p === 'signin') return 'signin'
+  if (p === 'signup' || p === 'register') return 'signup'
+  return null
+}
+
+/** Email one-time code for sign-in or sign-up email verification (Resend). */
+router.post('/email-code/request', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  const purpose = parseEmailOtpPurpose(req.body?.purpose)
+  if (!email || !isValidEmail(email)) {
+    return res.status(400).json({ error: 'A valid email address is required' })
+  }
+  if (!purpose) {
+    return res.status(400).json({ error: 'purpose must be signin or signup' })
+  }
+
+  try {
+    console.log('[auth/email-code/request]', { email, purpose })
+    const result = await requestEmailOtp(email, purpose)
+    const body: Record<string, unknown> = {
+      ok: true,
+      message: 'If this step applies to your email, a verification code was sent.',
+    }
+    if (result.devOtpLogged && process.env.NODE_ENV !== 'production') {
+      body.devHint = 'Code logged on the API server console (AUTH_EMAIL_LOG_OTP).'
+    }
+    if (result.emailWarning) {
+      body.emailWarning = result.emailWarning
+    }
+    body.emailSent = result.emailSent === true
+    return res.status(200).json(body)
+  } catch (error: any) {
+    if (error?.status === 503 || error?.code === '42P01') {
+      return res.status(503).json({
+        error: 'Email codes are not available yet',
+        detail: 'Run db:migrate so verifications exists.',
+      })
+    }
+    console.error('Failed to request email code', error)
+    return res.status(500).json({ error: 'Unable to send verification code' })
+  }
+})
+
+router.post('/email-code/verify', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  const otp = String(req.body?.otp || req.body?.code || '').trim()
+  const purpose = parseEmailOtpPurpose(req.body?.purpose)
+  if (!email || !otp) {
+    return res.status(400).json({ error: 'Email and verification code are required' })
+  }
+  if (!purpose) {
+    return res.status(400).json({ error: 'purpose must be signin or signup' })
+  }
+
+  try {
+    const valid = await verifyEmailOtp(email, otp, purpose)
+    if (!valid) {
+      return res.status(400).json({ error: 'Invalid or expired verification code' })
+    }
+
+    if (purpose === 'signup') {
+      return res.status(200).json({
+        ok: true,
+        emailVerified: true,
+        message: 'Email verified. You can finish creating your account.',
+      })
+    }
+
+    const accountResult = await runQuery<{ user_id: string }>(
+      `
+        SELECT user_id
+        FROM accounts
+        WHERE provider_id = 'password'
+          AND provider_user_id = $1
+        LIMIT 1
+      `,
+      [email],
+    )
+    const account = accountResult.rows[0]
+    if (!account) {
+      return res.status(401).json({ error: 'No account found for this email' })
+    }
+
+    const userResult = await runQuery<{
+      id: string
+      email: string
+      created_at: string
+      name: string | null
+      image: string | null
+      shipping_address1: string | null
+      shipping_address2: string | null
+      shipping_postal_code: string | null
+      shipping_city: string | null
+      shipping_region: string | null
+      phone: string | null
+      pudo_locker_name: string | null
+      pudo_locker_address: string | null
+      eft_bank_account_name: string | null
+      eft_bank_name: string | null
+      eft_bank_account_number: string | null
+      eft_bank_branch: string | null
+      avatar_frame: string | null
+    }>(
+      `
+        SELECT
+          id,
+          email,
+          created_at,
+          name,
+          image,
+          shipping_address1,
+          shipping_address2,
+          shipping_postal_code,
+          shipping_city,
+          shipping_region,
+          phone,
+          pudo_locker_name,
+          pudo_locker_address,
+          eft_bank_account_name,
+          eft_bank_name,
+          eft_bank_account_number,
+          eft_bank_branch,
+          avatar_frame
+        FROM users
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [account.user_id],
+    )
+
+    const user = userResult.rows[0]
+    if (!user) {
+      return res.status(401).json({ error: 'No account found for this email' })
+    }
+
+    const sessionToken = await createSessionForUser(user.id)
+    try {
+      await ensureDailyRewardRow(user.id)
+    } catch (e) {
+      console.warn('[auth/email-code] daily rewards row skipped', e)
+    }
+
+    return res.status(200).json({
+      user: {
+        id: user.id,
+        fullName: user.name || '',
+        email: user.email,
+        createdAt: user.created_at,
+        profilePicture: user.image,
+        shippingAddress: user.shipping_address1,
+        shippingAddressLine2: user.shipping_address2,
+        shippingPostalCode: user.shipping_postal_code,
+        shippingCity: user.shipping_city,
+        shippingProvince: user.shipping_region,
+        phone: user.phone,
+        pudoLockerName: user.pudo_locker_name,
+        pudoLockerAddress: user.pudo_locker_address,
+        eftBankAccountName: user.eft_bank_account_name,
+        eftBankName: user.eft_bank_name,
+        eftBankAccountNumber: user.eft_bank_account_number,
+        eftBankBranch: user.eft_bank_branch,
+        avatarFrameId: normalizeStoredAvatarFrame(user.avatar_frame),
+        paymentMethod: null,
+      },
+      sessionToken,
+    })
+  } catch (error: any) {
+    if (error?.code === '42P01') {
+      return res.status(503).json({ error: 'Email codes are not available yet' })
+    }
+    console.error('Failed to verify email code', error)
+    return res.status(500).json({ error: 'Unable to verify code' })
   }
 })
 
@@ -1479,6 +1671,7 @@ router.post('/forgot-password/request', async (req, res) => {
   }
 
   try {
+    console.log('[auth/forgot-password/request]', { email })
     const result = await requestPasswordResetOtp(email)
     const body: Record<string, unknown> = {
       ok: true,

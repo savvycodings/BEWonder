@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import type { Pool, PoolClient } from 'pg'
 import { runQuery } from '../db/client'
 import { hashPassword, verifyPassword } from './passwordCrypto'
+import { logAuthEmailEvent } from './authEmailLog'
 import { sendPasswordResetOtpEmail } from './passwordResetEmail'
 
 export const PASSWORD_RESET_OTP_TTL_MS = 15 * 60 * 1000
@@ -85,6 +86,7 @@ export async function requestPasswordResetOtp(email: string): Promise<{
   }
 
   const otp = generateOtp()
+  logAuthEmailEvent('password_reset_otp_generated', { email: normalized, expiresMinutes: 15 }, otp)
   const otpHash = hashOtp(otp)
   const expiresAt = new Date(Date.now() + PASSWORD_RESET_OTP_TTL_MS)
 
@@ -115,6 +117,11 @@ export async function requestPasswordResetOtp(email: string): Promise<{
   }
 
   const mail = await sendPasswordResetOtpEmail(normalized, otp)
+  logAuthEmailEvent('password_reset_email_dispatched', {
+    email: normalized,
+    sent: mail.sent,
+    devLogged: Boolean(mail.devLogged),
+  })
   return { ok: true, devOtpLogged: mail.devLogged }
 }
 
