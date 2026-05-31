@@ -161,6 +161,7 @@ router.get('/categories/:slug', async (req, res) => {
 
 router.get('/products', async (req, res) => {
   const first = Math.max(1, Math.min(50, Number(req.query.first || 20)))
+  const offset = Math.max(0, Math.min(5000, Number(req.query.offset || 0)))
   const q = String(req.query.q || req.query.query || '').trim()
   const sort = String(req.query.sort || '').trim().toLowerCase()
   const collectionHandle = String(req.query.collection || '').trim()
@@ -196,6 +197,8 @@ router.get('/products', async (req, res) => {
     )`)
   }
 
+  params.push(offset)
+  const offsetIdx = params.length
   params.push(first)
   const limitIdx = params.length
 
@@ -237,6 +240,7 @@ router.get('/products', async (req, res) => {
     ${IN_STOCK_SQL}
     ORDER BY ${orderBy}
     LIMIT $${limitIdx}
+    OFFSET $${offsetIdx}
   `
 
   const result = await runQuery(sql, params)

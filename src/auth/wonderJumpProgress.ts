@@ -37,7 +37,8 @@ function parseBestBiomeReached(raw: unknown): string {
 
 /** Matches WonderJump `displayRunScore` bands (high_score is display points, not raw height). */
 const DISPLAY_SCORE_AT_TROPICAL = 300
-const DISPLAY_SCORE_SPACE_START = 700
+/** When `SPACE_GAMEPLAY_BLEND` (0.5) is reached in-app — keep in sync with wonderJump.tsx. */
+const DISPLAY_SCORE_SPACE_START = 708
 const DISPLAY_SCORE_MUSHROOM_START = 130
 
 function accentBiomeFromDisplayScore(displayScore: number): string {
