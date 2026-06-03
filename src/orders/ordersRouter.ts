@@ -9,7 +9,7 @@ import {
   isValidPudoLockerTier,
   orderHasWholeSetLine,
   pudoLockerTierForSetOnly,
-  shippingCentsForPudoTier,
+  shippingCentsForOrder,
   type PudoLockerTier,
 } from './pudoLockerPricing'
 import { createYocoCheckout } from './yocoClient'
@@ -304,7 +304,7 @@ router.post('/', async (req, res) => {
 
   let shippingCents = 0
   if (currency === 'ZAR') {
-    shippingCents = shippingCentsForPudoTier(pudoLockerTier)
+    shippingCents = shippingCentsForOrder(subtotal, currency, pudoLockerTier)
   } else {
     return res.status(400).json({
       error: 'Domestic Pudo locker shipping applies to ZAR-priced items only',

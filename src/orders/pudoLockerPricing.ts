@@ -9,6 +9,20 @@ export const PUDO_LOCKER_SHIPPING_CENTS_ZAR: Record<PudoLockerTier, number> = {
   door: 11000,
 }
 
+/** ZAR subtotal (cents) at or above which Pudo delivery is free. R1,000 = 100_000 cents. */
+export const FREE_DELIVERY_SUBTOTAL_CENTS_ZAR = 100_000
+
+export function qualifiesForFreeDeliveryZar(
+  subtotalCents: number,
+  currency: string,
+): boolean {
+  return (
+    String(currency || '').trim().toUpperCase() === 'ZAR' &&
+    Number.isFinite(subtotalCents) &&
+    subtotalCents >= FREE_DELIVERY_SUBTOTAL_CENTS_ZAR
+  )
+}
+
 export const PUDO_LOCKER_LABELS: Record<PudoLockerTier, string> = {
   locker: 'Locker',
   door: 'Door',
@@ -61,6 +75,15 @@ export function shippingCentsForPudoTier(tier: string): number {
   if (isValidPudoLockerTier(t)) return PUDO_LOCKER_SHIPPING_CENTS_ZAR[t]
   if (LEGACY_SHIPPING_CENTS[t] != null) return LEGACY_SHIPPING_CENTS[t]
   return PUDO_LOCKER_SHIPPING_CENTS_ZAR.locker
+}
+
+export function shippingCentsForOrder(
+  subtotalCents: number,
+  currency: string,
+  tier: string,
+): number {
+  if (qualifiesForFreeDeliveryZar(subtotalCents, currency)) return 0
+  return shippingCentsForPudoTier(tier)
 }
 
 export function pudoLockerTierLabel(tier: string | null | undefined): string {
