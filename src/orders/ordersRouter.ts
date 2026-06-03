@@ -26,6 +26,44 @@ function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
 
+const ADDRESS_TEXT_PATTERN = /^[a-zA-Z0-9\s,.'#/-]+$/
+const PLACE_NAME_PATTERN = /^[a-zA-Z][a-zA-Z\s'.-]*$/
+
+function validateDoorShippingBody(body: Record<string, unknown>): string | null {
+  const line1 = String(body.shippingAddress || '').trim()
+  const line2 = String(body.shippingAddressLine2 || '').trim()
+  const postalCode = String(body.shippingPostalCode || '').trim()
+  const city = String(body.shippingCity || '').trim()
+  const province = String(body.shippingProvince || '').trim()
+
+  if (!line1 || line1.length < 5 || !ADDRESS_TEXT_PATTERN.test(line1)) {
+    return 'Enter a valid street address.'
+  }
+  if (line2 && !ADDRESS_TEXT_PATTERN.test(line2)) {
+    return 'Enter a valid apartment, suite, or unit.'
+  }
+  if (!/^\d{4}$/.test(postalCode)) {
+    return 'Enter a valid 4-digit postal code.'
+  }
+  if (!city || !PLACE_NAME_PATTERN.test(city)) {
+    return 'Enter a valid city name.'
+  }
+  if (!province || !PLACE_NAME_PATTERN.test(province)) {
+    return 'Enter a valid province.'
+  }
+  return null
+}
+
+function formatDoorSnapshotLine2(body: Record<string, unknown>): string {
+  const parts = [
+    String(body.shippingAddressLine2 || '').trim(),
+    String(body.shippingCity || '').trim(),
+    String(body.shippingProvince || '').trim(),
+    String(body.shippingPostalCode || '').trim(),
+  ].filter(Boolean)
+  return parts.join(', ')
+}
+
 type ProductRow = {
   id: number
   title: string
@@ -224,13 +262,29 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'contactEmail must be a valid email address' })
   }
 
-  const pudoLockerName = String(req.body?.pudoLockerName || '').trim()
-  const pudoLockerAddress = String(req.body?.pudoLockerAddress || '').trim()
+  let pudoLockerName = String(req.body?.pudoLockerName || '').trim()
+  let pudoLockerAddress = String(req.body?.pudoLockerAddress || '').trim()
+  let shipName = auth.user.fullName || ''
+  let ship1 = ''
+  let ship2 = ''
 
-  if (!pudoLockerName || !pudoLockerAddress) {
-    return res.status(400).json({
-      error: 'pudoLockerName and pudoLockerAddress are required for Pudo locker delivery',
-    })
+  if (pudoLockerTier === 'door') {
+    const doorErr = validateDoorShippingBody(req.body || {})
+    if (doorErr) {
+      return res.status(400).json({ error: doorErr })
+    }
+    ship1 = String(req.body?.shippingAddress || '').trim()
+    ship2 = formatDoorSnapshotLine2(req.body || {})
+    pudoLockerName = ''
+    pudoLockerAddress = ''
+  } else {
+    if (!pudoLockerName || !pudoLockerAddress) {
+      return res.status(400).json({
+        error: 'pudoLockerName and pudoLockerAddress are required for Pudo locker delivery',
+      })
+    }
+    ship1 = `Pudo locker: ${pudoLockerName}`
+    ship2 = pudoLockerAddress
   }
 
   if (orderHasWholeSetLine(lines) && !pudoLockerTierForSetOnly(pudoLockerTier)) {
@@ -257,12 +311,8 @@ router.post('/', async (req, res) => {
   const initialStatus = paymentMethod === 'eft' ? 'awaiting_proof' : 'pending_payment'
 
   const referenceCode = await generateUniqueReferenceCode()
-  const shipName = auth.user.fullName || ''
-  const ship1 = `Pudo locker: ${pudoLockerName}`
-  const ship2 = pudoLockerAddress
-
-  const orderPudoName = pudoLockerName
-  const orderPudoAddr = pudoLockerAddress
+  const orderPudoName = pudoLockerName || null
+  const orderPudoAddr = pudoLockerAddress || null
 
   const insert = await runQuery<{ id: string }>(
     `

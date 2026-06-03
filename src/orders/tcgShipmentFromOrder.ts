@@ -181,7 +181,7 @@ export function buildTcgRatesBody(
     parcels: parcels(cfg, lines, customerTier),
   }
 
-  if (order.delivery_method === 'pudo' && cfg.pudoDeliveryPickupPointId) {
+  if (usesPudoLockerPickup(order, cfg)) {
     base.delivery_pickup_point_id = cfg.pudoDeliveryPickupPointId
     base.delivery_pickup_point_provider = 'tcg-locker'
   } else {
@@ -191,12 +191,19 @@ export function buildTcgRatesBody(
   return base
 }
 
+function usesPudoLockerPickup(order: OrderShipmentRow, cfg: Cfg): boolean {
+  if (order.delivery_method !== 'pudo' || !cfg.pudoDeliveryPickupPointId) return false
+  const tier = String(order.pudo_locker_tier || '').trim().toLowerCase()
+  return tier !== 'door'
+}
+
 function doorDeliveryAddress(order: OrderShipmentRow): Record<string, unknown> {
   const line1 = (order.shipping_snapshot_line1 || '').trim()
   const line2 = (order.shipping_snapshot_line2 || '').trim()
   const name = (order.shipping_snapshot_name || '').trim()
+  const tier = String(order.pudo_locker_tier || '').trim().toLowerCase()
 
-  if (order.delivery_method === 'pudo') {
+  if (order.delivery_method === 'pudo' && tier !== 'door') {
     const locker = [order.pudo_locker_name, order.pudo_locker_address].filter(Boolean).join(', ')
     const entered = [name, `Pudo locker: ${locker}`, line1, line2].filter(Boolean).join('\n')
     return {
@@ -240,7 +247,7 @@ export function buildTcgShipmentBody(
       : {}),
   }
 
-  if (order.delivery_method === 'pudo' && cfg.pudoDeliveryPickupPointId) {
+  if (usesPudoLockerPickup(order, cfg)) {
     return {
       ...base,
       delivery_pickup_point_id: cfg.pudoDeliveryPickupPointId,
