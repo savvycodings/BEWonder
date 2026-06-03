@@ -36,7 +36,7 @@ export function buildDailyRewardItems(
   claimedCountInWindow: number,
   canClaim: boolean,
 ): DailyRewardItemPayload[] {
-  const windowStart = rewardWindowStartDay(Math.max(streakDays, 1))
+  const windowStart = rewardWindowStartDay(Math.max(0, streakDays))
   const items: DailyRewardItemPayload[] = []
 
   for (let i = 0; i < DAILY_REWARD_CYCLE_LENGTH; i++) {

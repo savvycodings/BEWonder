@@ -48,9 +48,11 @@ import {
   type EmailOtpPurpose,
 } from './emailOtp'
 import { registerUserSavedProductRoutes } from './userSavedProductsRoutes'
+import { registerUserCartRoutes } from './userCartRoutes'
 
 const router = express.Router()
 registerUserSavedProductRoutes(router)
+registerUserCartRoutes(router)
 
 /** Wonder Store item ids → cost in wonder coins (server is source of truth). */
 const WONDER_STORE_ITEM_COSTS: Record<string, number> = {
@@ -154,7 +156,7 @@ function validateShippingAddressFields(fields: {
 
 type DailyRewardRow = {
   claimed_count: number
-  last_claimed_at: string
+  last_claimed_at: string | null
   login_streak_count: number
   login_streak_last_calendar_date: string | null
 }
@@ -162,8 +164,8 @@ type DailyRewardRow = {
 async function ensureDailyRewardRowTx(client: PoolClient, userId: string) {
   await client.query(
     `
-      INSERT INTO user_daily_rewards (user_id, claimed_count, wallet_balance)
-      VALUES ($1, 0, 0)
+      INSERT INTO user_daily_rewards (user_id, claimed_count, wallet_balance, last_claimed_at)
+      VALUES ($1, 0, 0, NULL)
       ON CONFLICT (user_id) DO NOTHING
     `,
     [userId]
@@ -994,18 +996,6 @@ router.get('/daily-rewards', async (req, res) => {
     }
     try {
       await runLoginStreakReconcile(pool, auth.userId, tz)
-      await runLoginStreakBump(pool, auth.userId, false, tz)
-      await runQuery(
-        `
-          UPDATE user_daily_rewards
-          SET login_streak_count = GREATEST(login_streak_count, LEAST(claimed_count, $2))
-          WHERE user_id = $1
-            AND claimed_count > 0
-            AND claimed_count <= $2
-            AND login_streak_count < LEAST(claimed_count, $2)
-        `,
-        [auth.userId, maxDays],
-      )
     } catch (e: any) {
       if (e?.code !== '42703') throw e
     }
@@ -1048,6 +1038,14 @@ router.post('/daily-rewards/claim', async (req, res) => {
       beforeRow = { ...beforeRow, claimed_count: 0 }
     }
 
+    try {
+      await runLoginStreakReconcile(client, userId, tz)
+      const refreshed = await ensureDailyRewardRowTx(client, userId)
+      if (refreshed) beforeRow = refreshed
+    } catch (e: any) {
+      if (e?.code !== '42703') throw e
+    }
+
     const cycleDay = cyclePositionForNextClaim(beforeRow.claimed_count)
     const coinsAdded = DAILY_REWARD_AMOUNTS[cycleDay - 1] ?? cycleDay
 
@@ -1063,7 +1061,7 @@ router.post('/daily-rewards/claim', async (req, res) => {
           updated_at = NOW()
         WHERE user_id = $1
           AND (
-            claimed_count = 0
+            last_claimed_at IS NULL
             OR (last_claimed_at AT TIME ZONE $3)::date < (CURRENT_TIMESTAMP AT TIME ZONE $3)::date
           )
         RETURNING claimed_count, last_claimed_at

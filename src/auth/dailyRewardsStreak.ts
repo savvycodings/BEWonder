@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from 'pg'
 
 /**
  * One idempotent streak bump per local calendar day in the client's IANA timezone.
- * `requireSevenDayComplete`: when true, only rows with claimed_count >= 7 are updated (post–7-day track).
+ * Run after a successful daily reward claim (not on passive screen views).
  * Params: $1 = user_id, $2 = IANA timezone name (e.g. `Europe/Berlin`).
  */
 export function bumpLoginStreakSql(requireSevenDayComplete: boolean): string {
@@ -43,19 +43,34 @@ export async function runLoginStreakBump(
 }
 
 /**
- * Clears a broken streak when the user has not logged in on the previous local calendar day.
- * (Last activity was 2+ days ago — missing one full day in between.)
+ * Resets the 7-day reward track and login streak when the user missed at least one full
+ * local calendar day (no claim on the prior day, and/or no qualifying login day recorded).
  */
-export function reconcileBrokenLoginStreakSql(): string {
+export function reconcileBrokenDailyStreakSql(): string {
   return `
     UPDATE user_daily_rewards d
     SET
+      claimed_count = 0,
       login_streak_count = 0,
+      login_streak_last_calendar_date = NULL,
       updated_at = NOW()
     WHERE d.user_id = $1
-      AND d.login_streak_last_calendar_date IS NOT NULL
-      AND d.login_streak_last_calendar_date < ((CURRENT_TIMESTAMP AT TIME ZONE $2)::date - INTERVAL '1 day')::date
+      AND (
+        (
+          d.login_streak_last_calendar_date IS NOT NULL
+          AND d.login_streak_last_calendar_date < ((CURRENT_TIMESTAMP AT TIME ZONE $2)::date - INTERVAL '1 day')::date
+        )
+        OR (
+          d.last_claimed_at IS NOT NULL
+          AND (d.last_claimed_at AT TIME ZONE $2)::date < ((CURRENT_TIMESTAMP AT TIME ZONE $2)::date - INTERVAL '1 day')::date
+        )
+      )
   `
+}
+
+/** @deprecated Use reconcileBrokenDailyStreakSql */
+export function reconcileBrokenLoginStreakSql(): string {
+  return reconcileBrokenDailyStreakSql()
 }
 
 export async function runLoginStreakReconcile(
@@ -63,5 +78,5 @@ export async function runLoginStreakReconcile(
   userId: string,
   timeZone: string,
 ): Promise<void> {
-  await executor.query(reconcileBrokenLoginStreakSql(), [userId, timeZone])
+  await executor.query(reconcileBrokenDailyStreakSql(), [userId, timeZone])
 }

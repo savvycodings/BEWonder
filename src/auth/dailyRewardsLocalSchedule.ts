@@ -21,7 +21,8 @@ export type LocalDailyRewardSchedule = {
 }
 
 /**
- * One claim per local calendar day (IANA zone from client). `claimed_count === 0` always allows first claim.
+ * One claim per local calendar day (IANA zone from client).
+ * Never-claimed users (`last_claimed_at` null) may claim day 1 immediately on first login.
  */
 export async function fetchLocalDailyRewardSchedule(
   executor: Pool | PoolClient,
@@ -52,8 +53,9 @@ export async function fetchLocalDailyRewardSchedule(
     )
     const row = r.rows[0]
     if (!row) {
-      return { canClaimByLocalCalendar: claimedCount === 0, nextUnlockAt: null }
+      return { canClaimByLocalCalendar: true, nextUnlockAt: null }
     }
+    /** First login: row exists but user has never claimed (INSERT leaves last_claimed_at null). */
     if (!row.last_local) {
       return { canClaimByLocalCalendar: true, nextUnlockAt: null }
     }
@@ -75,9 +77,9 @@ export async function fetchLocalDailyRewardSchedule(
       try {
         return await run('UTC')
       } catch {
-        return { canClaimByLocalCalendar: claimedCount === 0, nextUnlockAt: null }
+        return { canClaimByLocalCalendar: true, nextUnlockAt: null }
       }
     }
-    return { canClaimByLocalCalendar: claimedCount === 0, nextUnlockAt: null }
+    return { canClaimByLocalCalendar: true, nextUnlockAt: null }
   }
 }

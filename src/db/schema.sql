@@ -67,7 +67,7 @@ ALTER COLUMN body DROP NOT NULL;
 CREATE TABLE IF NOT EXISTS user_daily_rewards (
   user_id TEXT PRIMARY KEY,
   claimed_count INTEGER NOT NULL DEFAULT 0,
-  last_claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_claimed_at TIMESTAMPTZ NULL,
   wallet_balance INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -77,7 +77,17 @@ ALTER TABLE user_daily_rewards
 ADD COLUMN IF NOT EXISTS claimed_count INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE user_daily_rewards
-ADD COLUMN IF NOT EXISTS last_claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ADD COLUMN IF NOT EXISTS last_claimed_at TIMESTAMPTZ NULL;
+
+ALTER TABLE user_daily_rewards
+ALTER COLUMN last_claimed_at DROP NOT NULL;
+
+ALTER TABLE user_daily_rewards
+ALTER COLUMN last_claimed_at DROP DEFAULT;
+
+UPDATE user_daily_rewards
+SET last_claimed_at = NULL
+WHERE claimed_count = 0 AND last_claimed_at IS NOT NULL;
 
 ALTER TABLE user_daily_rewards
 ADD COLUMN IF NOT EXISTS wallet_balance INTEGER NOT NULL DEFAULT 0;
@@ -507,3 +517,15 @@ CREATE TABLE IF NOT EXISTS user_saved_products (
 
 CREATE INDEX IF NOT EXISTS idx_user_saved_products_user_created
   ON user_saved_products (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_cart_items (
+  user_id TEXT NOT NULL,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  packaging TEXT NOT NULL DEFAULT 'single' CHECK (packaging IN ('single', 'set')),
+  quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, product_id, packaging)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_cart_items_user_updated
+  ON user_cart_items (user_id, updated_at DESC);
