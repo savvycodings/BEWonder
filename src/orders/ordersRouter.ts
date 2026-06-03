@@ -15,6 +15,11 @@ import {
 import { createYocoCheckout } from './yocoClient'
 import { yocoLog, yocoLogError } from './yocoLog'
 import { syncYocoOrderPayment } from './yocoSyncRoute'
+import {
+  canCustomerAbandonOrder,
+  customerOrderHistoryWhereSql,
+  isCustomerVisibleOrder,
+} from './customerOrderVisibility'
 
 const router = express.Router()
 
@@ -448,6 +453,7 @@ router.get('/mine', async (req, res) => {
         ) AS preview_image_url
       FROM orders o
       WHERE o.user_id = $1
+        AND ${customerOrderHistoryWhereSql('o')}
       ORDER BY o.created_at DESC
       LIMIT 100
     `,
@@ -517,6 +523,9 @@ router.get('/:orderId', async (req, res) => {
   )
   const order = orderRes.rows[0]
   if (!order) return res.status(404).json({ error: 'Order not found' })
+  if (!isCustomerVisibleOrder(order)) {
+    return res.status(404).json({ error: 'Order not found' })
+  }
 
   const lines = await runQuery<{
     id: string
@@ -577,6 +586,54 @@ router.get('/:orderId', async (req, res) => {
       imageUrl: l.image_url,
     })),
   })
+})
+
+router.post('/:orderId/abandon', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  const orderId = String(req.params.orderId || '').trim()
+  if (!orderId) return res.status(400).json({ error: 'orderId required' })
+
+  const orderRes = await runQuery<{
+    id: string
+    status: string
+    payment_method: string
+    eft_proof_image_url: string | null
+  }>(
+    `
+      SELECT id, status, payment_method, eft_proof_image_url
+      FROM orders
+      WHERE id = $1 AND user_id = $2
+      LIMIT 1
+    `,
+    [orderId, auth.userId]
+  )
+  const order = orderRes.rows[0]
+  if (!order) return res.status(404).json({ error: 'Order not found' })
+  if (order.status === 'cancelled') {
+    return res.status(200).json({ ok: true, alreadyCancelled: true })
+  }
+  if (!canCustomerAbandonOrder(order)) {
+    return res.status(400).json({ error: 'This order cannot be cancelled' })
+  }
+
+  await runQuery(
+    `
+      UPDATE orders
+      SET status = 'cancelled', updated_at = NOW()
+      WHERE id = $1
+    `,
+    [orderId]
+  )
+  await runQuery(
+    `
+      INSERT INTO order_payment_events (order_id, provider, event_type, status_after, payload_json)
+      VALUES ($1, $2, 'checkout_abandoned', 'cancelled', $3::jsonb)
+    `,
+    [orderId, order.payment_method, JSON.stringify({ reason: 'customer_abandoned' })]
+  )
+
+  return res.status(200).json({ ok: true })
 })
 
 router.post('/:orderId/eft-proof', async (req, res) => {
