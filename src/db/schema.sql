@@ -453,6 +453,9 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_parcel_length_cm NUMERIC;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_parcel_width_cm NUMERIC;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_parcel_height_cm NUMERIC;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_parcel_weight_kg NUMERIC;
+-- Admin marks paid order as physically sold / handed over (see POST /admin/orders/:id/mark-sold).
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS sold_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_orders_sold_at ON orders (sold_at DESC) WHERE sold_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_inventory_events_variant_shopify_id ON inventory_events (variant_shopify_id);
 CREATE INDEX IF NOT EXISTS idx_inventory_events_occurred_at ON inventory_events (occurred_at DESC);
 

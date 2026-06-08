@@ -41,6 +41,7 @@ type AdminMeasurement = {
   lengthCm: number | null
   widthCm: number | null
   heightCm: number | null
+  quantityAvailable: number | null
 }
 
 const CATALOG_PRODUCTS_QUERY = `
@@ -86,8 +87,18 @@ const ADMIN_VARIANT_MEASUREMENTS_QUERY = `
       ... on ProductVariant {
         id
         inventoryItem {
+          id
           measurement {
             weight { value unit }
+          }
+          inventoryLevels(first: 10) {
+            edges {
+              node {
+                quantities(names: ["available"]) {
+                  quantity
+                }
+              }
+            }
           }
         }
         metafields(first: 12, namespace: "custom") {
@@ -99,6 +110,28 @@ const ADMIN_VARIANT_MEASUREMENTS_QUERY = `
     }
   }
 `
+
+function sumAdminAvailableQuantity(
+  inventoryItem: {
+    inventoryLevels?: {
+      edges: { node: { quantities?: { quantity: number }[] } }[]
+    } | null
+  } | null | undefined
+): number | null {
+  const edges = inventoryItem?.inventoryLevels?.edges || []
+  if (!edges.length) return null
+  let sum = 0
+  let found = false
+  for (const { node } of edges) {
+    for (const q of node.quantities || []) {
+      if (typeof q.quantity === 'number' && Number.isFinite(q.quantity)) {
+        sum += Math.max(0, Math.floor(q.quantity))
+        found = true
+      }
+    }
+  }
+  return found ? sum : null
+}
 
 function parseMetafieldNumber(metafields: { key: string; value: string }[], keys: string[]): number | null {
   for (const key of keys) {
@@ -234,7 +267,9 @@ async function fetchAllStorefrontProducts(): Promise<StorefrontProduct[]> {
 
 async function fetchAdminMeasurements(
   variantIds: string[]
-): Promise<Map<string, { admin: AdminMeasurement; metafields: { key: string; value: string }[] }>> {
+): Promise<
+  Map<string, { admin: AdminMeasurement; metafields: { key: string; value: string }[] }>
+> {
   const map = new Map<
     string,
     { admin: AdminMeasurement; metafields: { key: string; value: string }[] }
@@ -268,6 +303,9 @@ async function fetchAdminMeasurements(
             measurement?: {
               weight?: { value: number; unit: string } | null
             } | null
+            inventoryLevels?: {
+              edges: { node: { quantities?: { quantity: number }[] } }[]
+            } | null
           } | null
           metafields?: { edges: { node: { key: string; value: string; type: string } }[] }
         } | null>
@@ -286,6 +324,7 @@ async function fetchAdminMeasurements(
             lengthCm: parseMetafieldNumber(metafields, ['length_cm', 'length', 'parcel_length_cm']),
             widthCm: parseMetafieldNumber(metafields, ['width_cm', 'width', 'parcel_width_cm']),
             heightCm: parseMetafieldNumber(metafields, ['height_cm', 'height', 'parcel_height_cm']),
+            quantityAvailable: sumAdminAvailableQuantity(node.inventoryItem),
           },
           metafields,
         })
@@ -336,11 +375,20 @@ export async function syncShopifyCatalogToDb(): Promise<{ products: number; vari
     })
 
     const productShipping = aggregateProductShipping(variantShippings)
-    const totalInventory = product.variants.reduce(
-      (sum, v) => sum + (typeof v.quantityAvailable === 'number' ? v.quantityAvailable : 0),
-      0
-    )
-    const availableForSale = product.variants.some((v) => v.availableForSale)
+
+    const variantStock = product.variants.map((variant) => {
+      const adminBlock = adminByVariant.get(variant.id)
+      const adminQty = adminBlock?.admin.quantityAvailable
+      const storefrontQty =
+        typeof variant.quantityAvailable === 'number' ? variant.quantityAvailable : 0
+      const quantityAvailable = adminQty != null ? adminQty : storefrontQty
+      const availableForSale =
+        adminQty != null ? adminQty > 0 : variant.availableForSale
+      return { quantityAvailable, availableForSale }
+    })
+
+    const totalInventory = variantStock.reduce((sum, v) => sum + v.quantityAvailable, 0)
+    const availableForSale = variantStock.some((v) => v.availableForSale)
 
     const images = [
       ...(product.featuredImageUrl ? [product.featuredImageUrl] : []),
@@ -409,6 +457,7 @@ export async function syncShopifyCatalogToDb(): Promise<{ products: number; vari
     for (let i = 0; i < product.variants.length; i++) {
       const variant = product.variants[i]
       const shipping = variantShippings[i]
+      const stock = variantStock[i]
       await runQuery(
         `
           INSERT INTO product_variants (
@@ -449,8 +498,8 @@ export async function syncShopifyCatalogToDb(): Promise<{ products: number; vari
           variant.price?.amount ?? null,
           variant.compareAtPrice?.amount ?? null,
           variant.price?.currencyCode ?? 'ZAR',
-          variant.availableForSale,
-          variant.quantityAvailable,
+          stock.availableForSale,
+          stock.quantityAvailable,
           i + 1,
           shipping.lengthCm,
           shipping.widthCm,

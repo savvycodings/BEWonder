@@ -3,8 +3,10 @@ import { pool, runQuery } from '../db/client'
 import { requireAdmin, signAdminJwt, verifyAdminPassword } from './adminAuth'
 import { applySpendLoyaltyForNewlyPaidOrder } from '../orders/orderSpendLoyalty'
 import { createTcgShipmentForPaidOrderIfNeeded } from '../orders/tcgFulfillment'
+import { markOrderSold } from '../orders/markOrderSold'
 import { tcgConfigReadyForShipment } from '../orders/tcgConfig'
 import { pudoLockerTierLabel } from '../orders/pudoLockerPricing'
+import { syncShopifyCatalogToDb } from '../shopify/syncCatalog'
 
 const router = express.Router()
 
@@ -35,6 +37,25 @@ router.post('/orders/login', (req, res) => {
   return res.status(200).json({ adminToken: token, expiresInSeconds: 8 * 60 * 60 })
 })
 
+/** Pull products, variants, and stock levels from Shopify into Postgres. */
+router.post('/shopify/sync-catalog', requireAdmin, async (_req, res) => {
+  try {
+    const result = await syncShopifyCatalogToDb()
+    return res.status(200).json({
+      ok: true,
+      products: result.products,
+      variants: result.variants,
+      message: `Synced ${result.products} products and ${result.variants} variants (including stock).`,
+    })
+  } catch (e) {
+    console.error('[admin/shopify/sync-catalog]', e)
+    return res.status(500).json({
+      error: 'Shopify catalog sync failed',
+      detail: (e as Error).message,
+    })
+  }
+})
+
 router.get('/orders', requireAdmin, async (req, res) => {
   const pm = String(req.query.paymentMethod || 'all').toLowerCase()
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50))
@@ -58,6 +79,7 @@ router.get('/orders', requireAdmin, async (req, res) => {
     delivery_method: string | null
     pudo_locker_tier: string | null
     pudo_locker_name: string | null
+    sold_at: string | null
     created_at: string
     user_id: string
     email: string | null
@@ -75,6 +97,7 @@ router.get('/orders', requireAdmin, async (req, res) => {
         o.delivery_method,
         o.pudo_locker_tier,
         o.pudo_locker_name,
+        o.sold_at,
         o.created_at,
         o.user_id,
         u.email,
@@ -101,6 +124,7 @@ router.get('/orders', requireAdmin, async (req, res) => {
       pudoLockerTier: r.pudo_locker_tier,
       pudoLockerTierLabel: pudoLockerTierLabel(r.pudo_locker_tier),
       pudoLockerName: r.pudo_locker_name,
+      soldAt: r.sold_at,
       createdAt: r.created_at,
       userId: r.user_id,
       userEmail: r.email,
@@ -256,6 +280,7 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
     tcg_parcel_width_cm: number | null
     tcg_parcel_height_cm: number | null
     tcg_parcel_weight_kg: number | null
+    sold_at: string | null
     created_at: string
     email: string | null
     name: string | null
@@ -312,6 +337,7 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
         o.tcg_parcel_width_cm,
         o.tcg_parcel_height_cm,
         o.tcg_parcel_weight_kg,
+        o.sold_at,
         o.created_at,
         u.email,
         u.name,
@@ -419,6 +445,7 @@ router.get('/orders/:orderId', requireAdmin, async (req, res) => {
       tcgParcelWidthCm: order.tcg_parcel_width_cm,
       tcgParcelHeightCm: order.tcg_parcel_height_cm,
       tcgParcelWeightKg: order.tcg_parcel_weight_kg,
+      soldAt: order.sold_at,
       createdAt: order.created_at,
     },
     user: {
@@ -637,6 +664,31 @@ router.post('/orders/:orderId/book-courier', requireAdmin, async (req, res) => {
         ? 'Booking did not complete; see tcgLastError.'
         : 'No booking was created (check server logs and ShipLogic env).',
   })
+})
+
+/**
+ * Mark a **paid** order as sold — reduces Shopify + local DB stock.
+ */
+router.post('/orders/:orderId/mark-sold', requireAdmin, async (req, res) => {
+  const orderId = String(req.params.orderId || '').trim()
+  if (!orderId) return res.status(400).json({ error: 'orderId required' })
+
+  try {
+    const result = await markOrderSold(orderId)
+    if (!result.ok && result.message === 'Order not found') {
+      return res.status(404).json({ error: result.message })
+    }
+    if (!result.ok) {
+      return res.status(400).json({ error: result.message })
+    }
+    return res.status(200).json(result)
+  } catch (e) {
+    console.error('[admin/mark-sold]', e)
+    return res.status(500).json({
+      error: 'Failed to mark order as sold',
+      detail: (e as Error).message,
+    })
+  }
 })
 
 router.get('/community/reports', requireAdmin, async (req, res) => {
