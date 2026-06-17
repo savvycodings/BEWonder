@@ -20,12 +20,11 @@ import {
   customerOrderHistoryWhereSql,
   isCustomerVisibleOrder,
 } from './customerOrderVisibility'
+import { quoteOrderCart, type LineInput } from './orderCartPricing'
 
 const router = express.Router()
 
 /** South Africa domestic Pudo locker tiers (order currency must be ZAR). */
-
-type LineInput = { productId: string; quantity: number; packaging?: 'single' | 'set' }
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
@@ -151,6 +150,28 @@ router.get('/eft-instructions', (_req, res) => {
   })
 })
 
+router.post('/quote', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+
+  const items = req.body?.items as LineInput[] | undefined
+  const pudoLockerTier = String(req.body?.pudoLockerTier || '').trim().toLowerCase()
+  const wonderCoinsToRedeem = Math.max(0, Math.floor(Number(req.body?.wonderCoinsToRedeem) || 0))
+
+  const result = await quoteOrderCart({
+    userId: auth.userId,
+    items: items || [],
+    pudoLockerTier,
+    wonderCoinsToRedeem,
+  })
+
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error, detail: result.detail })
+  }
+
+  return res.status(200).json(result.quote)
+})
+
 router.post('/', async (req, res) => {
   const auth = await getAuthUserFromRequest(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
@@ -161,91 +182,8 @@ router.post('/', async (req, res) => {
   }
 
   const items = req.body?.items as LineInput[] | undefined
-  if (!Array.isArray(items) || !items.length) {
-    return res.status(400).json({ error: 'items array is required' })
-  }
-  if (items.length > 30) {
-    return res.status(400).json({ error: 'Too many line items' })
-  }
+  const wonderCoinsToRedeem = Math.max(0, Math.floor(Number(req.body?.wonderCoinsToRedeem) || 0))
 
-  const lines: {
-    productId: number | null
-    title: string
-    unitCents: number
-    currency: string
-    qty: number
-    lineTotal: number
-    imageUrl: string | null
-    packaging: 'single' | 'set'
-  }[] = []
-
-  let currency = ''
-  const demandByProductId = new Map<number, number>()
-  const productRowsById = new Map<number, ProductRow>()
-  for (const raw of items) {
-    const qty = Math.max(1, Math.min(99, Math.floor(Number(raw.quantity) || 0)))
-    const packaging = raw.packaging === 'set' ? 'set' : 'single'
-    const row = await loadProductForOrder(String(raw.productId), packaging)
-    if (!row) {
-      return res.status(400).json({ error: `Unknown product: ${raw.productId}` })
-    }
-    const { totalInventory, inStock } = stockFieldsFromRow(row)
-    if (!inStock) {
-      return res.status(400).json({ error: `${row.title} is out of stock` })
-    }
-    productRowsById.set(row.id, row)
-    const nextDemand = (demandByProductId.get(row.id) || 0) + qty
-    demandByProductId.set(row.id, nextDemand)
-    if (totalInventory != null && nextDemand > totalInventory) {
-      const left = totalInventory
-      return res.status(400).json({
-        error:
-          left === 0
-            ? `${row.title} is out of stock`
-            : `Only ${left} in stock for ${row.title}`,
-      })
-    }
-    const { cents, currency: cur } = moneyStringToCents(row.variant_price, row.variant_currency_code || 'USD')
-    if (cents <= 0) {
-      return res.status(400).json({ error: `Product has no price: ${raw.productId}` })
-    }
-    if (!currency) currency = cur
-    else if (cur !== currency) {
-      return res.status(400).json({ error: 'Mixed currencies in one order are not supported' })
-    }
-    const lineTotal = cents * qty
-    lines.push({
-      productId: row.id,
-      title: row.title,
-      unitCents: cents,
-      currency: cur,
-      qty,
-      lineTotal,
-      imageUrl: featuredImage(row),
-      packaging,
-    })
-  }
-
-  for (const [productId, requestedQty] of demandByProductId) {
-    const row = productRowsById.get(productId)
-    if (!row) continue
-    const totalInventory = parseTotalInventory(row.total_inventory)
-    if (!isProductInStock(totalInventory, row.available_for_sale)) {
-      return res.status(400).json({ error: `${row.title} is out of stock` })
-    }
-    if (totalInventory != null && requestedQty > totalInventory) {
-      return res.status(400).json({
-        error:
-          totalInventory === 0
-            ? `${row.title} is out of stock`
-            : `Only ${totalInventory} in stock for ${row.title}`,
-      })
-    }
-  }
-
-  const subtotal = lines.reduce((s, l) => s + l.lineTotal, 0)
-
-  const deliveryMethod = 'pudo'
   const pudoLockerTierRaw = String(req.body?.pudoLockerTier || '').trim().toLowerCase()
   if (!isValidPudoLockerTier(pudoLockerTierRaw)) {
     return res.status(400).json({
@@ -253,6 +191,24 @@ router.post('/', async (req, res) => {
     })
   }
   const pudoLockerTier = pudoLockerTierRaw as PudoLockerTier
+
+  const quoted = await quoteOrderCart({
+    userId: auth.userId,
+    items: items || [],
+    pudoLockerTier,
+    wonderCoinsToRedeem,
+  })
+  if (!quoted.ok) {
+    return res.status(quoted.status).json({ error: quoted.error, detail: quoted.detail })
+  }
+
+  const { lines, quote } = quoted
+  const subtotal = quote.subtotalCents
+  const shippingCents = quote.shippingCents
+  const discountCents = quote.discountCents
+  const wonderCoinsRedeemed = quote.wonderCoinsRedeemed
+  const total = quote.totalCents
+  const currency = quote.currency
 
   const contactPhone = String(req.body?.contactPhone || '').trim()
   const contactEmailRaw = String(req.body?.contactEmail || '').trim().toLowerCase()
@@ -302,17 +258,7 @@ router.post('/', async (req, res) => {
   const customerEftBankName = String(req.body?.customerEftBankName || '').trim()
   const customerEftAccountNumber = String(req.body?.customerEftAccountNumber || '').trim()
 
-  let shippingCents = 0
-  if (currency === 'ZAR') {
-    shippingCents = shippingCentsForOrder(subtotal, currency, pudoLockerTier)
-  } else {
-    return res.status(400).json({
-      error: 'Domestic Pudo locker shipping applies to ZAR-priced items only',
-      detail: `This cart is priced in ${currency}.`,
-    })
-  }
-
-  const total = subtotal + shippingCents
+  const deliveryMethod = 'pudo'
   const initialStatus = paymentMethod === 'eft' ? 'awaiting_proof' : 'pending_payment'
 
   const referenceCode = await generateUniqueReferenceCode()
@@ -323,7 +269,7 @@ router.post('/', async (req, res) => {
     `
       INSERT INTO orders (
         user_id, reference_code, status, payment_method, currency_code,
-        subtotal_cents, shipping_cents, total_cents,
+        subtotal_cents, discount_cents, wonder_coins_redeemed, shipping_cents, total_cents,
         shipping_snapshot_name, shipping_snapshot_line1, shipping_snapshot_line2,
         delivery_method, contact_phone, contact_email,
         pudo_locker_name, pudo_locker_address, pudo_locker_tier,
@@ -332,11 +278,11 @@ router.post('/', async (req, res) => {
       )
       VALUES (
         $1, $2, $3, $4, $5,
-        $6, $7, $8,
-        $9, $10, $11,
-        $12, $13, $14,
-        $15, $16, $17,
-        $18, $19, $20,
+        $6, $7, $8, $9, $10,
+        $11, $12, $13,
+        $14, $15, $16,
+        $17, $18, $19,
+        $20, $21, $22,
         NOW()
       )
       RETURNING id
@@ -348,6 +294,8 @@ router.post('/', async (req, res) => {
       paymentMethod,
       currency,
       subtotal,
+      discountCents,
+      wonderCoinsRedeemed,
       shippingCents,
       total,
       shipName,
@@ -402,6 +350,9 @@ router.post('/', async (req, res) => {
       JSON.stringify({
         referenceCode,
         totalCents: total,
+        subtotalCents: subtotal,
+        discountCents,
+        wonderCoinsRedeemed,
         deliveryMethod,
         shippingCents,
         contactEmail,
@@ -412,6 +363,11 @@ router.post('/', async (req, res) => {
   return res.status(201).json({
     orderId,
     referenceCode,
+    subtotalCents: subtotal,
+    discountCents,
+    wonderCoinsRedeemed,
+    wonderCoinsEarned: quote.wonderCoinsEarned,
+    shippingCents,
     totalCents: total,
     currencyCode: currency,
     paymentMethod,

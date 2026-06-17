@@ -14,11 +14,15 @@ export type SendAuthEmailResult = {
 }
 
 function authFromAddress(): string | null {
-  return (
+  const raw =
     process.env.AUTH_EMAIL_FROM?.trim() ||
     process.env.PASSWORD_RESET_FROM_EMAIL?.trim() ||
     null
-  )
+  if (!raw) return null
+  if (raw.includes('<')) return raw
+  const match = raw.match(/^(.+?)\s+(\S+@\S+)$/)
+  if (match) return `${match[1].trim()} <${match[2]}>`
+  return raw
 }
 
 export function isResendConfigured(): boolean {

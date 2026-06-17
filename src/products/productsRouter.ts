@@ -12,6 +12,15 @@ const IN_STOCK_SQL = `
   AND COALESCE(p.total_inventory, 0) > 0
 `.trim()
 
+/** Home default feed only — brand pages and text search include sold-out items. */
+function shouldFilterInStockOnly(req: express.Request): boolean {
+  const flag = String(req.query.inStockOnly || '').toLowerCase()
+  if (flag === '1' || flag === 'true') return true
+  if (flag === '0' || flag === 'false') return false
+  const q = String(req.query.q || req.query.query || '').trim()
+  return !q
+}
+
 router.get('/categories', async (_req, res) => {
   const result = await runQuery<{
     shopify_id: string
@@ -33,7 +42,6 @@ router.get('/categories', async (_req, res) => {
       LEFT JOIN products p
         ON p.shopify_id = cp.product_shopify_id
         AND p.is_active = true
-        ${IN_STOCK_SQL}
       GROUP BY c.shopify_id, c.handle, c.title, c.image_url
       ORDER BY c.title ASC
     `
@@ -133,7 +141,6 @@ router.get('/categories/:slug', async (req, res) => {
       ) v_max ON true
       WHERE c.handle = $1
         AND p.is_active = true
-        ${IN_STOCK_SQL}
       ORDER BY p.updated_at DESC NULLS LAST
     `,
     [slug]
@@ -237,7 +244,7 @@ router.get('/products', async (req, res) => {
       LIMIT 1
     ) v_max ON true
     WHERE ${conditions.join(' AND ')}
-    ${IN_STOCK_SQL}
+    ${shouldFilterInStockOnly(req) ? IN_STOCK_SQL : ''}
     ORDER BY ${orderBy}
     LIMIT $${limitIdx}
     OFFSET $${offsetIdx}

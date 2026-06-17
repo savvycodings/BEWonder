@@ -2,7 +2,7 @@ import { pool, runQuery } from '../db/client'
 
 const ALLOWED_BIOMES = new Set(['grassland', 'mushroom', 'tropical', 'space'])
 
-export const WONDER_JUMP_CHEST_REWARD_COINS = 4
+export const WONDER_JUMP_CHEST_REWARD_GEMS = 4
 
 /** Debug-only: when true, starting the chest timer unlocks immediately. */
 export const WONDER_JUMP_CHEST_PICKUP_INSTANT_UNLOCK_DEBUG = false
@@ -54,7 +54,7 @@ function resolveBiomeReached(stored: unknown, displayScore: number): string {
 }
 
 export type ClaimWonderJumpChestResult =
-  | { ok: true; wonderCoins: number }
+  | { ok: true; wonderGems: number }
   | {
       ok: false
       status: 400 | 409
@@ -345,16 +345,16 @@ export async function claimWonderJumpChestForUser(userId: string): Promise<Claim
         msRemaining: unlockMs - now,
       }
     }
-    const coinRow = await client.query<{ wonder_coins: number }>(
+    const gemRow = await client.query<{ wonder_gems: number }>(
       `
         UPDATE users
-        SET wonder_coins = wonder_coins + $2, updated_at = NOW()
+        SET wonder_gems = wonder_gems + $2, updated_at = NOW()
         WHERE id::text = $1
-        RETURNING wonder_coins
+        RETURNING wonder_gems
       `,
-      [userId, WONDER_JUMP_CHEST_REWARD_COINS]
+      [userId, WONDER_JUMP_CHEST_REWARD_GEMS]
     )
-    if (!coinRow.rows[0]) {
+    if (!gemRow.rows[0]) {
       await client.query('ROLLBACK')
       return { ok: false, status: 400, message: 'User not found' }
     }
@@ -367,7 +367,7 @@ export async function claimWonderJumpChestForUser(userId: string): Promise<Claim
       [userId]
     )
     await client.query('COMMIT')
-    return { ok: true, wonderCoins: coinRow.rows[0].wonder_coins }
+    return { ok: true, wonderGems: gemRow.rows[0].wonder_gems }
   } catch (e) {
     try {
       await client.query('ROLLBACK')

@@ -1,4 +1,5 @@
 import { runQuery } from '../db/client'
+import { checkRestockTransition } from '../notifications/restockCheck'
 import { storefrontRequest } from './storefront'
 import { shopifyAdminRequest, getShopifyAdminConfig } from './adminClient'
 import {
@@ -511,6 +512,10 @@ export async function syncShopifyCatalogToDb(): Promise<{ products: number; vari
       )
       variantCount += 1
     }
+
+    await checkRestockTransition(productDbId).catch((e) =>
+      console.error('[restock] check failed for product', productDbId, e),
+    )
   }
 
   return { products: products.length, variants: variantCount }

@@ -7,6 +7,7 @@ import { markOrderSold } from '../orders/markOrderSold'
 import { tcgConfigReadyForShipment } from '../orders/tcgConfig'
 import { pudoLockerTierLabel } from '../orders/pudoLockerPricing'
 import { syncShopifyCatalogToDb } from '../shopify/syncCatalog'
+import { getNotificationOutboxSummary, processOutbox } from '../notifications/processOutbox'
 
 const router = express.Router()
 
@@ -854,6 +855,37 @@ router.post('/community/reports/:reportId/delete-message', requireAdmin, async (
     throw error
   } finally {
     client.release()
+  }
+})
+
+router.get('/notifications', requireAdmin, async (_req, res) => {
+  try {
+    const summary = await getNotificationOutboxSummary()
+    return res.status(200).json(summary)
+  } catch (error: any) {
+    if (error?.code === '42P01') {
+      return res.status(503).json({
+        error: 'Notification outbox is not enabled on this database yet.',
+      })
+    }
+    console.error('[admin/notifications] list failed', error)
+    return res.status(500).json({ error: 'Unable to load notifications' })
+  }
+})
+
+router.post('/notifications', requireAdmin, async (_req, res) => {
+  try {
+    const stats = await processOutbox()
+    const summary = await getNotificationOutboxSummary()
+    return res.status(200).json({ ok: true, ...stats, ...summary })
+  } catch (error: any) {
+    if (error?.code === '42P01') {
+      return res.status(503).json({
+        error: 'Notification outbox is not enabled on this database yet.',
+      })
+    }
+    console.error('[admin/notifications] process failed', error)
+    return res.status(500).json({ error: 'Unable to process notifications' })
   }
 })
 

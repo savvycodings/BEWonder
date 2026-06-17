@@ -138,6 +138,24 @@ async function listSavedProductsForUser(userId: string) {
   return result.rows.map(mapSavedProductRow)
 }
 
+async function getRestockNotifyState(userId: string, productId: number) {
+  const row = await runQuery<{ notify_on_restock: boolean }>(
+    `
+      SELECT notify_on_restock
+      FROM user_saved_products
+      WHERE user_id = $1 AND product_id = $2
+      LIMIT 1
+    `,
+    [userId, productId],
+  )
+  const saved = row.rows[0]
+  return {
+    productId,
+    notifyOnRestock: saved?.notify_on_restock === true,
+    isSaved: Boolean(saved),
+  }
+}
+
 export function registerUserSavedProductRoutes(router: Router) {
   router.get('/saved-products', async (req: Request, res: Response) => {
     const auth = await getAuthUserFromRequest(req)
@@ -177,8 +195,8 @@ export function registerUserSavedProductRoutes(router: Router) {
       }
       await runQuery(
         `
-          INSERT INTO user_saved_products (user_id, product_id)
-          VALUES ($1, $2)
+          INSERT INTO user_saved_products (user_id, product_id, notify_on_restock)
+          VALUES ($1, $2, true)
           ON CONFLICT (user_id, product_id) DO NOTHING
         `,
         [auth.userId, productId],
@@ -220,6 +238,100 @@ export function registerUserSavedProductRoutes(router: Router) {
       }
       console.error('Failed to unsave product', error)
       return res.status(500).json({ error: 'Unable to remove saved product' })
+    }
+  })
+
+  router.get('/notify/restock', async (req: Request, res: Response) => {
+    const auth = await getAuthUserFromRequest(req)
+    if (!auth) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+    const productId = coerceProductId(req.query.productId)
+    if (!productId) {
+      return res.status(400).json({ error: 'productId is required' })
+    }
+    try {
+      const state = await getRestockNotifyState(auth.userId, productId)
+      return res.status(200).json(state)
+    } catch (error: any) {
+      if (error?.code === '42P01' || error?.code === '42703') {
+        return res.status(503).json({
+          error: 'Restock notifications need a database update on this server.',
+        })
+      }
+      console.error('Failed to load restock notify state', error)
+      return res.status(500).json({ error: 'Unable to load restock notification status' })
+    }
+  })
+
+  router.post('/notify/restock', async (req: Request, res: Response) => {
+    const auth = await getAuthUserFromRequest(req)
+    if (!auth) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+    const productId = coerceProductId(req.body?.productId)
+    if (!productId) {
+      return res.status(400).json({ error: 'productId is required' })
+    }
+    const notify = req.body?.notify === true
+    try {
+      const exists = await runQuery<{ id: number }>(
+        `SELECT id FROM products WHERE id = $1 AND is_active = true LIMIT 1`,
+        [productId],
+      )
+      if (!exists.rows[0]) {
+        return res.status(404).json({ error: 'Product not found' })
+      }
+      await runQuery(
+        `
+          INSERT INTO user_saved_products (user_id, product_id, notify_on_restock)
+          VALUES ($1, $2, $3)
+          ON CONFLICT (user_id, product_id)
+          DO UPDATE SET notify_on_restock = EXCLUDED.notify_on_restock
+        `,
+        [auth.userId, productId, notify],
+      )
+      const state = await getRestockNotifyState(auth.userId, productId)
+      return res.status(200).json(state)
+    } catch (error: any) {
+      if (error?.code === '42P01' || error?.code === '42703') {
+        return res.status(503).json({
+          error: 'Restock notifications need a database update on this server.',
+        })
+      }
+      console.error('Failed to update restock notify preference', error)
+      return res.status(500).json({ error: 'Unable to update restock notification preference' })
+    }
+  })
+
+  router.delete('/notify/restock', async (req: Request, res: Response) => {
+    const auth = await getAuthUserFromRequest(req)
+    if (!auth) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+    const productId = coerceProductId(req.query.productId)
+    if (!productId) {
+      return res.status(400).json({ error: 'productId is required' })
+    }
+    try {
+      await runQuery(
+        `
+          UPDATE user_saved_products
+          SET notify_on_restock = false
+          WHERE user_id = $1 AND product_id = $2
+        `,
+        [auth.userId, productId],
+      )
+      const state = await getRestockNotifyState(auth.userId, productId)
+      return res.status(200).json(state)
+    } catch (error: any) {
+      if (error?.code === '42P01' || error?.code === '42703') {
+        return res.status(503).json({
+          error: 'Restock notifications need a database update on this server.',
+        })
+      }
+      console.error('Failed to remove restock notify preference', error)
+      return res.status(500).json({ error: 'Unable to remove restock notification preference' })
     }
   })
 }

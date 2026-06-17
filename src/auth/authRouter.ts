@@ -210,14 +210,15 @@ async function getPaidOrderCount(userId: string): Promise<number> {
 async function buildDailyRewardApiPayload(userId: string, row: DailyRewardRow, timeZone: string) {
   const maxDays = DAILY_REWARD_CYCLE_LENGTH
   const claimedCount = Math.max(0, Math.min(row.claimed_count, maxDays))
-  const [wonderCoins, ownedStoreItemIds, paidOrderCount, wonderJumpRank, schedule] = await Promise.all([
+  const [wonderCoins, wonderGems, ownedStoreItemIds, paidOrderCount, wonderJumpRank, schedule] = await Promise.all([
     getUserWonderCoins(userId),
+    getUserWonderGems(userId),
     getOwnedWonderStoreItemIds(userId),
     getPaidOrderCount(userId),
     getWonderJumpLeaderboardRankForUser(userId),
     fetchLocalDailyRewardSchedule(pool, userId, timeZone, claimedCount, maxDays),
   ])
-  return getDailyRewardPayload(row, wonderCoins, ownedStoreItemIds, paidOrderCount, wonderJumpRank, schedule)
+  return getDailyRewardPayload(row, wonderCoins, wonderGems, ownedStoreItemIds, paidOrderCount, wonderJumpRank, schedule)
 }
 
 async function ensureDailyRewardRow(userId: string) {
@@ -243,6 +244,20 @@ async function getUserWonderCoins(userId: string): Promise<number> {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0
 }
 
+async function getUserWonderGems(userId: string): Promise<number> {
+  const r = await runQuery<{ wonder_gems: number }>(
+    `
+      SELECT wonder_gems
+      FROM users
+      WHERE id::text = $1
+      LIMIT 1
+    `,
+    [userId]
+  )
+  const v = r.rows[0]?.wonder_gems
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+}
+
 async function getOwnedWonderStoreItemIds(userId: string): Promise<string[]> {
   const r = await runQuery<{ item_id: string }>(
     `
@@ -259,6 +274,7 @@ async function getOwnedWonderStoreItemIds(userId: string): Promise<string[]> {
 function getDailyRewardPayload(
   row: DailyRewardRow,
   wonderCoins: number,
+  wonderGems: number,
   ownedStoreItemIds: string[],
   paidOrderCount: number,
   wonderJumpRank: number | null,
@@ -278,6 +294,7 @@ function getDailyRewardPayload(
 
   return {
     walletBalance: wonderCoins,
+    gemBalance: wonderGems,
     ownedStoreItemIds,
     /** Claims completed in the current 7-day reward window (resets after each day-7 claim). */
     claimedCount,
@@ -1047,7 +1064,7 @@ router.post('/daily-rewards/claim', async (req, res) => {
     }
 
     const cycleDay = cyclePositionForNextClaim(beforeRow.claimed_count)
-    const coinsAdded = DAILY_REWARD_AMOUNTS[cycleDay - 1] ?? cycleDay
+    const gemsAdded = DAILY_REWARD_AMOUNTS[cycleDay - 1] ?? cycleDay
 
     const updateResult = await client.query<DailyRewardRow>(
       `
@@ -1085,10 +1102,10 @@ router.post('/daily-rewards/claim', async (req, res) => {
     await client.query(
       `
         UPDATE users
-        SET wonder_coins = wonder_coins + $2, updated_at = NOW()
+        SET wonder_gems = wonder_gems + $2, updated_at = NOW()
         WHERE id::text = $1
       `,
-      [userId, coinsAdded]
+      [userId, gemsAdded]
     )
 
     try {
@@ -1255,7 +1272,7 @@ router.post('/wonder-jump-chest/claim', async (_req, res) => {
     }
     return res.status(200).json({
       ok: true,
-      wonderCoins: result.wonderCoins,
+      wonderGems: result.wonderGems,
       chestUnlocksAt: null,
     })
   } catch (error: any) {
@@ -1304,13 +1321,13 @@ router.post('/wonder-store/purchase', async (req, res) => {
       })
     }
 
-    const spend = await client.query<{ wonder_coins: number }>(
+    const spend = await client.query<{ wonder_gems: number }>(
       `
         UPDATE users
-        SET wonder_coins = wonder_coins - $2, updated_at = NOW()
+        SET wonder_gems = wonder_gems - $2, updated_at = NOW()
         WHERE id::text = $1
-          AND wonder_coins >= $2
-        RETURNING wonder_coins
+          AND wonder_gems >= $2
+        RETURNING wonder_gems
       `,
       [userId, cost]
     )
@@ -1322,7 +1339,7 @@ router.post('/wonder-store/purchase', async (req, res) => {
         return res.status(500).json({ error: 'Unable to load rewards' })
       }
       return res.status(402).json({
-        error: 'Not enough coins',
+        error: 'Not enough gems',
         ...(await buildDailyRewardApiPayload(userId, row, tz)),
       })
     }

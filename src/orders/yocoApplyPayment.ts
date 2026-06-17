@@ -1,5 +1,5 @@
 import type { PoolClient } from 'pg'
-import { applySpendLoyaltyForNewlyPaidOrder } from './orderSpendLoyalty'
+import { settleWonderCoinsForPaidOrder } from './orderSpendLoyalty'
 import { createTcgShipmentForPaidOrderIfNeeded } from './tcgFulfillment'
 
 export type YocoOrderRow = {
@@ -9,6 +9,30 @@ export type YocoOrderRow = {
   status: string
   total_cents: number
   currency_code: string
+}
+
+async function loadOrderForWonderCoinsSettlement(
+  client: PoolClient,
+  orderId: string,
+): Promise<Parameters<typeof settleWonderCoinsForPaidOrder>[1] | null> {
+  const row = await client.query<Parameters<typeof settleWonderCoinsForPaidOrder>[1]>(
+    `
+      SELECT
+        id,
+        user_id,
+        currency_code,
+        subtotal_cents,
+        COALESCE(discount_cents, 0)::int AS discount_cents,
+        COALESCE(wonder_coins_redeemed, 0)::int AS wonder_coins_redeemed,
+        COALESCE(wonder_coins_redeem_settled, FALSE) AS wonder_coins_redeem_settled,
+        spend_loyalty_coins_awarded
+      FROM orders
+      WHERE id = $1::uuid
+      LIMIT 1
+    `,
+    [orderId],
+  )
+  return row.rows[0] || null
 }
 
 export async function applyYocoPaymentToOrder(
@@ -53,12 +77,10 @@ export async function applyYocoPaymentToOrder(
   )
 
   if (becamePaid && success) {
-    await applySpendLoyaltyForNewlyPaidOrder(client, {
-      orderId: order.id,
-      userId: order.user_id,
-      currencyCode: order.currency_code,
-      totalCents: order.total_cents,
-    })
+    const coinOrder = await loadOrderForWonderCoinsSettlement(client, order.id)
+    if (coinOrder) {
+      await settleWonderCoinsForPaidOrder(client, coinOrder)
+    }
   }
 
   return { becamePaid, status: resolvedStatusAfter }

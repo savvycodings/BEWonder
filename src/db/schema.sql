@@ -178,6 +178,11 @@ CREATE TABLE IF NOT EXISTS orders (
 
 -- ZAR spend loyalty: wonder coins granted once when order becomes paid (see Yoco webhook). NULL = not evaluated yet.
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS spend_loyalty_coins_awarded INTEGER;
+
+-- WonderCoins checkout redemption (merchandise discount; settled when order becomes paid).
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_cents INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS wonder_coins_redeemed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS wonder_coins_redeem_settled BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS yoco_checkout_id TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS yoco_payment_id TEXT;
 ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_payment_method_chk;
@@ -245,16 +250,26 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS eft_bank_branch TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_banner_url TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_badge_slots JSONB NOT NULL DEFAULT '[]'::jsonb;
 
--- Wonder coins: app-wide currency (earned via daily rewards, etc.; spent in Wonder Store). Default 0.
+-- Wonder coins: spend-loyalty / cart-discount currency (earned from orders). Default 0.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS wonder_coins INTEGER NOT NULL DEFAULT 0;
 
--- One-time: copy legacy balance from daily-rewards row into users (if column existed).
-UPDATE users u
-SET wonder_coins = GREATEST(u.wonder_coins, COALESCE(d.wallet_balance, 0))
-FROM user_daily_rewards d
-WHERE d.user_id = u.id::text;
+-- Wonder gems: cosmetic currency (earned via daily login + WonderJump chest; spent in Wonder Store). Default 0.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS wonder_gems INTEGER NOT NULL DEFAULT 0;
 
--- Wonder Store purchases (deducts wonder_coins on server; prevents double-buy).
+-- Legacy daily-reward balances lived in user_daily_rewards.wallet_balance (pre–WonderGem split).
+-- Credit wonder_gems and clear the legacy column (idempotent while wallet_balance > 0).
+UPDATE users u
+SET wonder_gems = u.wonder_gems + COALESCE(d.wallet_balance, 0),
+    updated_at = NOW()
+FROM user_daily_rewards d
+WHERE d.user_id = u.id::text
+  AND COALESCE(d.wallet_balance, 0) > 0;
+
+UPDATE user_daily_rewards
+SET wallet_balance = 0, updated_at = NOW()
+WHERE wallet_balance > 0;
+
+-- Wonder Store purchases (deducts wonder_gems on server; prevents double-buy).
 CREATE TABLE IF NOT EXISTS user_wonder_store_purchases (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id TEXT NOT NULL,
@@ -532,3 +547,31 @@ CREATE TABLE IF NOT EXISTS user_cart_items (
 
 CREATE INDEX IF NOT EXISTS idx_user_cart_items_user_updated
   ON user_cart_items (user_id, updated_at DESC);
+
+-- Back-in-stock notifications (see BACK-IN-STOCK-INTEGRATION.md)
+ALTER TABLE user_saved_products ADD COLUMN IF NOT EXISTS notify_on_restock BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE user_saved_products ADD COLUMN IF NOT EXISTS last_notified_at TIMESTAMPTZ NULL;
+
+CREATE TABLE IF NOT EXISTS product_availability_snapshots (
+  product_id BIGINT PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+  is_purchasable BOOLEAN NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS notification_outbox (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT NOT NULL,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL DEFAULT 'email',
+  status TEXT NOT NULL DEFAULT 'pending',
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  sent_at TIMESTAMPTZ NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_outbox_pending
+  ON notification_outbox (user_id, product_id, channel)
+  WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_status
+  ON notification_outbox (status, created_at);
