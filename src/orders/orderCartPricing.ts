@@ -1,3 +1,4 @@
+import { coerceWonderWalletInt } from '../auth/wonderWallet'
 import { runQuery } from '../db/client'
 import { moneyStringToCents } from './money'
 import { isProductInStock, parseTotalInventory, stockFieldsFromRow } from '../products/inventory'
@@ -158,10 +159,9 @@ export async function buildOrderLinesFromItems(items: LineInput[]): Promise<Buil
 export async function getUserWonderCoinsBalance(userId: string): Promise<number> {
   const r = await runQuery<{ wonder_coins: number }>(
     `SELECT wonder_coins FROM users WHERE id::text = $1 LIMIT 1`,
-    [userId],
+    [String(userId || '').trim()],
   )
-  const v = r.rows[0]?.wonder_coins
-  return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0
+  return coerceWonderWalletInt(r.rows[0]?.wonder_coins)
 }
 
 export type OrderQuoteResult = {
@@ -182,7 +182,7 @@ export type QuoteOrderCartResult =
   | { ok: false; status: number; error: string; detail?: string }
 
 export async function quoteOrderCart(params: {
-  userId: string
+  userId: string | null
   items: LineInput[]
   pudoLockerTier: string
   wonderCoinsToRedeem: number
@@ -214,12 +214,17 @@ export async function quoteOrderCart(params: {
   }
 
   const shippingCents = shippingCentsForOrder(subtotalCents, currency, pudoLockerTier)
-  const walletBalance = await getUserWonderCoinsBalance(params.userId)
+  const walletBalance = params.userId
+    ? await getUserWonderCoinsBalance(params.userId)
+    : 0
+  const coinsToRedeem = params.userId
+    ? Math.max(0, Math.floor(params.wonderCoinsToRedeem))
+    : 0
   const coinQuote = quoteOrderWonderCoins({
     subtotalCents,
     shippingCents,
     balance: walletBalance,
-    wonderCoinsToRedeem: params.wonderCoinsToRedeem,
+    wonderCoinsToRedeem: coinsToRedeem,
   })
 
   return {
@@ -234,7 +239,7 @@ export async function quoteOrderCart(params: {
       totalCents: coinQuote.totalCents,
       freeDelivery: qualifiesForFreeDeliveryZar(subtotalCents, currency),
       maxRedeemableCoins: coinQuote.maxRedeemableCoins,
-      walletBalance,
+      walletBalance: coerceWonderWalletInt(walletBalance),
       currency,
     },
   }

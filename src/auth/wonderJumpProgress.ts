@@ -1,4 +1,5 @@
 import { pool, runQuery } from '../db/client'
+import { coerceWonderWalletInt } from './wonderWallet'
 
 const ALLOWED_BIOMES = new Set(['grassland', 'mushroom', 'tropical', 'space'])
 
@@ -367,7 +368,7 @@ export async function claimWonderJumpChestForUser(userId: string): Promise<Claim
       [userId]
     )
     await client.query('COMMIT')
-    return { ok: true, wonderGems: gemRow.rows[0].wonder_gems }
+    return { ok: true, wonderGems: coerceWonderWalletInt(gemRow.rows[0].wonder_gems) }
   } catch (e) {
     try {
       await client.query('ROLLBACK')

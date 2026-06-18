@@ -21,6 +21,7 @@ import { ALLOWED_AVATAR_FRAMES, normalizeStoredAvatarFrameId } from '../constant
 import { validateProfileDisplayName } from '../constants/profileDisplayName'
 import { normalizeLegacyWonderBadgeId, WONDER_PROFILE_BADGE_IDS } from '../constants/wonderBadges'
 import { runLoginStreakBump, runLoginStreakReconcile } from './dailyRewardsStreak'
+import { coerceWonderWalletInt } from './wonderWallet'
 import {
   DAILY_REWARD_AMOUNTS,
   DAILY_REWARD_CYCLE_LENGTH,
@@ -241,7 +242,7 @@ async function getUserWonderCoins(userId: string): Promise<number> {
     [userId]
   )
   const v = r.rows[0]?.wonder_coins
-  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+  return coerceWonderWalletInt(v)
 }
 
 async function getUserWonderGems(userId: string): Promise<number> {
@@ -255,7 +256,7 @@ async function getUserWonderGems(userId: string): Promise<number> {
     [userId]
   )
   const v = r.rows[0]?.wonder_gems
-  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+  return coerceWonderWalletInt(v)
 }
 
 async function getOwnedWonderStoreItemIds(userId: string): Promise<string[]> {
@@ -954,7 +955,7 @@ router.post('/redeem-code', async (req, res) => {
     await client.query('COMMIT')
 
     return res.status(200).json({
-      wonderCoins: bal.rows[0].wonder_coins,
+      wonderCoins: coerceWonderWalletInt(bal.rows[0].wonder_coins),
       message: `You received ${coins} Wonder coins.`,
     })
   } catch (error: any) {
@@ -1099,14 +1100,19 @@ router.post('/daily-rewards/claim', async (req, res) => {
       })
     }
 
-    await client.query(
+    const gemUpdate = await client.query<{ wonder_gems: number }>(
       `
         UPDATE users
         SET wonder_gems = wonder_gems + $2, updated_at = NOW()
         WHERE id::text = $1
+        RETURNING wonder_gems
       `,
       [userId, gemsAdded]
     )
+    if (!gemUpdate.rows[0]) {
+      await client.query('ROLLBACK')
+      return res.status(500).json({ error: 'Unable to credit Wonder Gems' })
+    }
 
     try {
       // Bump only — do not reconcile here (reconcile on GET). Reconcile before bump on claim
@@ -1147,7 +1153,12 @@ router.post('/daily-rewards/claim', async (req, res) => {
 
     await client.query('COMMIT')
 
-    return res.status(200).json(await buildDailyRewardApiPayload(userId, payloadRow, tz))
+    const payload = await buildDailyRewardApiPayload(userId, payloadRow, tz)
+    return res.status(200).json({
+      ...payload,
+      gemsAwarded: gemsAdded,
+      gemBalance: coerceWonderWalletInt(gemUpdate.rows[0].wonder_gems),
+    })
   } catch (error) {
     try {
       await client.query('ROLLBACK')

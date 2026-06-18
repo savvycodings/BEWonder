@@ -151,25 +151,31 @@ router.get('/eft-instructions', (_req, res) => {
 })
 
 router.post('/quote', async (req, res) => {
-  const auth = await getAuthUserFromRequest(req)
-  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  try {
+    const auth = await getAuthUserFromRequest(req)
 
-  const items = req.body?.items as LineInput[] | undefined
-  const pudoLockerTier = String(req.body?.pudoLockerTier || '').trim().toLowerCase()
-  const wonderCoinsToRedeem = Math.max(0, Math.floor(Number(req.body?.wonderCoinsToRedeem) || 0))
+    const items = req.body?.items as LineInput[] | undefined
+    const pudoLockerTier = String(req.body?.pudoLockerTier || '').trim().toLowerCase()
+    const wonderCoinsToRedeem = auth
+      ? Math.max(0, Math.floor(Number(req.body?.wonderCoinsToRedeem) || 0))
+      : 0
 
-  const result = await quoteOrderCart({
-    userId: auth.userId,
-    items: items || [],
-    pudoLockerTier,
-    wonderCoinsToRedeem,
-  })
+    const result = await quoteOrderCart({
+      userId: auth?.userId ?? null,
+      items: items || [],
+      pudoLockerTier,
+      wonderCoinsToRedeem,
+    })
 
-  if (!result.ok) {
-    return res.status(result.status).json({ error: result.error, detail: result.detail })
+    if (!result.ok) {
+      return res.status(result.status).json({ error: result.error, detail: result.detail })
+    }
+
+    return res.status(200).json(result.quote)
+  } catch (error) {
+    console.error('POST /orders/quote failed', error)
+    return res.status(500).json({ error: 'Unable to quote order' })
   }
-
-  return res.status(200).json(result.quote)
 })
 
 router.post('/', async (req, res) => {
