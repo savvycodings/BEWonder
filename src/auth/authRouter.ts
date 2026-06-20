@@ -216,10 +216,30 @@ async function buildDailyRewardApiPayload(userId: string, row: DailyRewardRow, t
     getUserWonderGems(userId),
     getOwnedWonderStoreItemIds(userId),
     getPaidOrderCount(userId),
-    getWonderJumpLeaderboardRankForUser(userId),
+    getWonderJumpLeaderboardRankSafe(userId),
     fetchLocalDailyRewardSchedule(pool, userId, timeZone, claimedCount, maxDays),
   ])
   return getDailyRewardPayload(row, wonderCoins, wonderGems, ownedStoreItemIds, paidOrderCount, wonderJumpRank, schedule)
+}
+
+async function getWonderJumpLeaderboardRankSafe(userId: string): Promise<number | null> {
+  try {
+    return await getWonderJumpLeaderboardRankForUser(userId)
+  } catch (e: any) {
+    if (e?.code === '42P01' || e?.code === '42703') return null
+    throw e
+  }
+}
+
+function coerceWonderJumpRank(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.floor(value)
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number.parseInt(value, 10)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return null
 }
 
 async function ensureDailyRewardRow(userId: string) {
@@ -303,7 +323,7 @@ function getDailyRewardPayload(
     currentStreakDays: loginStreak,
     rewardWindowStartDay: windowStartDay,
     paidOrderCount,
-    wonderJumpRank,
+    wonderJumpRank: coerceWonderJumpRank(wonderJumpRank),
     canClaim,
     nextUnlockAt,
     rewards: buildDailyRewardItems(loginStreak, claimedCount, canClaim),
@@ -314,7 +334,7 @@ async function userEarnsProfileBadge(userId: string, badgeId: string): Promise<b
   if (badgeId === 'badge:heart') return true
   const row = await ensureDailyRewardRow(userId)
   if (!row) return false
-  const [paid, rank] = await Promise.all([getPaidOrderCount(userId), getWonderJumpLeaderboardRankForUser(userId)])
+  const [paid, rank] = await Promise.all([getPaidOrderCount(userId), getWonderJumpLeaderboardRankSafe(userId)])
   const streak =
     typeof row.login_streak_count === 'number' && Number.isFinite(row.login_streak_count)
       ? Math.max(0, Math.floor(row.login_streak_count))

@@ -13,6 +13,7 @@
     "db:genarate": "pnpm run db:generate",
     "db:push": "pnpm db:migrate",
     "db:migrate": "npx tsc && node dist/db/migrate.js",
+    "db:reset-wallet": "npx tsc && node dist/db/resetAllWonderWallet.js --confirm-all",
     "db:migrate:community": "npx tsc && node dist/db/migrateCommunityMessages.js",
     "shopify:sync": "npx tsc && node dist/db/syncShopifyCatalog.js",
     "test": "echo \"Error: no test specified\" && exit 1",
