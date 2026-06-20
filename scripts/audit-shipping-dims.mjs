@@ -9,7 +9,7 @@ const r = await pool.query(`
     COUNT(*) FILTER (WHERE length_cm = 60 AND width_cm = 41 AND height_cm = 17 AND weight_kg = 5)::int AS default_set
   FROM products
 `)
-
+// variants
 const v = await pool.query(`
   SELECT
     COUNT(*)::int AS total_variants,
