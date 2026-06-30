@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg'
+import { sendOrderPaidAdminNotification } from '../notifications/sendOrderPaidAdminNotification'
 import { settleWonderCoinsForPaidOrder } from './orderSpendLoyalty'
 import { createTcgShipmentForPaidOrderIfNeeded } from './tcgFulfillment'
 
@@ -90,6 +91,9 @@ export async function runYocoPaymentSideEffects(orderId: string, becamePaid: boo
   if (becamePaid && success) {
     void createTcgShipmentForPaidOrderIfNeeded(orderId).catch((err) =>
       console.error('[tcg] create shipment after payment failed', err)
+    )
+    void sendOrderPaidAdminNotification(orderId).catch((err) =>
+      console.error('[order-paid-admin-email] notification failed', err)
     )
   }
 }

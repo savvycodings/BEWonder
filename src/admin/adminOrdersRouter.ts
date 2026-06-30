@@ -8,6 +8,7 @@ import { tcgConfigReadyForShipment } from '../orders/tcgConfig'
 import { pudoLockerTierLabel } from '../orders/pudoLockerPricing'
 import { syncShopifyCatalogToDb } from '../shopify/syncCatalog'
 import { getNotificationOutboxSummary, processOutbox } from '../notifications/processOutbox'
+import { sendOrderPaidAdminNotification } from '../notifications/sendOrderPaidAdminNotification'
 
 const router = express.Router()
 
@@ -580,6 +581,9 @@ router.post('/orders/:orderId/accept-eft', requireAdmin, async (req, res) => {
 
     void createTcgShipmentForPaidOrderIfNeeded(orderId).catch((err) =>
       console.error('[tcg] EFT accept: shipment create failed', orderId, err)
+    )
+    void sendOrderPaidAdminNotification(orderId).catch((err) =>
+      console.error('[order-paid-admin-email] EFT accept notification failed', orderId, err)
     )
 
     return res.status(200).json({
