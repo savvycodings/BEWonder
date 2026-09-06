@@ -42,6 +42,7 @@ import {
   validateNewPasswordPair,
   verifyPasswordResetOtp,
 } from './passwordReset'
+import { deleteUserAccount } from './deleteUserAccount'
 import {
   consumeSignupEmailVerification,
   requestEmailOtp,
@@ -1005,6 +1006,32 @@ router.post('/logout', async (req, res) => {
 
   await revokeSessionByToken(auth.token)
   return res.status(200).json({ ok: true })
+})
+
+router.post('/delete-account', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  const password = String(req.body?.password ?? '')
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await deleteUserAccount(client, auth.userId, password)
+    if (!result.ok) {
+      await client.query('ROLLBACK')
+      return res.status(result.status).json({ error: result.error })
+    }
+    await client.query('COMMIT')
+    return res.status(200).json({ ok: true, message: 'Account deleted.' })
+  } catch (error) {
+    await client.query('ROLLBACK')
+    console.error('Failed to delete account', error)
+    return res.status(500).json({ error: 'Unable to delete account' })
+  } finally {
+    client.release()
+  }
 })
 
 router.get('/daily-rewards', async (req, res) => {
