@@ -356,17 +356,17 @@ async function userEarnsProfileBadge(userId: string, badgeId: string): Promise<b
     case 'badge:order10':
       return paid >= 10
     case 'badge:wj_top100':
-      return rank !== null && rank <= 100
+      return rank !== null && rank >= 51 && rank <= 100
     case 'badge:wj_top50':
-      return rank !== null && rank <= 50
+      return rank !== null && rank >= 11 && rank <= 50
     case 'badge:wj_top10':
-      return rank !== null && rank <= 10
+      return rank !== null && rank >= 4 && rank <= 10
     case 'badge:wj_top3':
-      return rank !== null && rank <= 3
+      return rank !== null && rank === 3
     case 'badge:wj_top2':
-      return rank !== null && rank <= 2
+      return rank !== null && rank === 2
     case 'badge:wj_top1':
-      return rank !== null && rank <= 1
+      return rank !== null && rank === 1
     default:
       return false
   }
@@ -617,6 +617,55 @@ function parseEmailOtpPurpose(raw: unknown): EmailOtpPurpose | null {
   if (p === 'signup' || p === 'register') return 'signup'
   return null
 }
+
+/** Check whether an email already has a password account (signup guard). */
+router.get('/check-email', async (req, res) => {
+  const email = String(req.query.email || '').trim().toLowerCase()
+  if (!email || !isValidEmail(email)) {
+    return res.status(400).json({ error: 'Invalid email' })
+  }
+  try {
+    const result = await runQuery(
+      `
+        SELECT 1
+        FROM users u
+        INNER JOIN accounts a ON a.user_id = u.id::text AND a.provider_id = 'password'
+        WHERE LOWER(u.email) = $1
+        LIMIT 1
+      `,
+      [email],
+    )
+    return res.status(200).json({ exists: result.rows.length > 0 })
+  } catch (error) {
+    console.error('[auth/check-email] failed', error)
+    return res.status(500).json({ error: 'Unable to check email' })
+  }
+})
+
+/** Check whether a phone number already has a password account (signup guard). */
+router.get('/check-phone', async (req, res) => {
+  const phone = String(req.query.phone || '').trim()
+  const phoneDigits = phone.replace(/\D/g, '')
+  if (phoneDigits.length < 9) {
+    return res.status(400).json({ error: 'Invalid phone' })
+  }
+  try {
+    const result = await runQuery(
+      `
+        SELECT 1
+        FROM users u
+        INNER JOIN accounts a ON a.user_id = u.id::text AND a.provider_id = 'password'
+        WHERE regexp_replace(COALESCE(u.phone, ''), '[^0-9]', '', 'g') = $1
+        LIMIT 1
+      `,
+      [phoneDigits],
+    )
+    return res.status(200).json({ exists: result.rows.length > 0 })
+  } catch (error) {
+    console.error('[auth/check-phone] failed', error)
+    return res.status(500).json({ error: 'Unable to check phone' })
+  }
+})
 
 /** Email one-time code for sign-in or sign-up email verification (Resend). */
 router.post('/email-code/request', async (req, res) => {
