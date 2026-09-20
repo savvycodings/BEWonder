@@ -7,6 +7,7 @@ export type PaidOrderWonderCoinsRow = {
   currency_code: string
   subtotal_cents: number
   discount_cents: number
+  promo_discount_cents: number
   wonder_coins_redeemed: number
   wonder_coins_redeem_settled: boolean
   spend_loyalty_coins_awarded: number | null
@@ -14,7 +15,7 @@ export type PaidOrderWonderCoinsRow = {
 
 /**
  * After an order first becomes `paid`, deduct redeemed WonderCoins and credit earn once.
- * Earn: 1 coin per R1 merchandise after discount (shipping excluded).
+ * Earn: 1 coin per R1 merchandise after all discounts (shipping excluded).
  * Uses order row flags so retries never double-settle.
  */
 export async function settleWonderCoinsForPaidOrder(
@@ -24,6 +25,7 @@ export async function settleWonderCoinsForPaidOrder(
   const { id: orderId, user_id: userId, currency_code: currencyCode } = order
   const subtotalCents = Math.max(0, Math.floor(order.subtotal_cents || 0))
   const discountCents = Math.max(0, Math.floor(order.discount_cents || 0))
+  const promoDiscountCents = Math.max(0, Math.floor(order.promo_discount_cents || 0))
   const redeemPoints = Math.max(0, Math.floor(order.wonder_coins_redeemed || 0))
 
   if (currencyCode !== 'ZAR') return
@@ -52,7 +54,7 @@ export async function settleWonderCoinsForPaidOrder(
     }
   }
 
-  const merchandiseAfterDiscount = Math.max(0, subtotalCents - discountCents)
+  const merchandiseAfterDiscount = Math.max(0, subtotalCents - promoDiscountCents - discountCents)
   const coinsToEarn = coinsEarnedFromMerchandiseCents(merchandiseAfterDiscount)
 
   const marked = await client.query<{ spend_loyalty_coins_awarded: number }>(
@@ -102,6 +104,7 @@ export async function applySpendLoyaltyForNewlyPaidOrder(
         currency_code,
         subtotal_cents,
         COALESCE(discount_cents, 0)::int AS discount_cents,
+        COALESCE(promo_discount_cents, 0)::int AS promo_discount_cents,
         COALESCE(wonder_coins_redeemed, 0)::int AS wonder_coins_redeemed,
         COALESCE(wonder_coins_redeem_settled, FALSE) AS wonder_coins_redeem_settled,
         spend_loyalty_coins_awarded

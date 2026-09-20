@@ -18,6 +18,8 @@ export type OrderPaidAdminEmailParams = {
   shippingCents: number
   discountCents: number
   wonderCoinsRedeemed: number
+  promoCode: string | null
+  promoDiscountCents: number
   totalCents: number
   deliverySummary: string
   paidAt: string
@@ -70,6 +72,10 @@ export function buildOrderPaidAdminEmailText(params: OrderPaidAdminEmailParams):
     `Subtotal: ${formatMoney(params.subtotalCents, params.currencyCode)}`,
     `Shipping: ${formatMoney(params.shippingCents, params.currencyCode)}`,
   )
+  if (params.promoDiscountCents > 0) {
+    const code = params.promoCode?.trim() || 'Promo'
+    lines.push(`${code} discount: −${formatMoney(params.promoDiscountCents, params.currencyCode)}`)
+  }
   if (params.discountCents > 0) {
     lines.push(`WonderCoins discount: −${formatMoney(params.discountCents, params.currencyCode)} (${params.wonderCoinsRedeemed} coins)`)
   }
@@ -101,6 +107,14 @@ export function buildOrderPaidAdminEmailHtml(params: OrderPaidAdminEmailParams):
       </tr>`
     })
     .join('')
+
+  const promoRow =
+    params.promoDiscountCents > 0
+      ? `<tr>
+          <td colspan="3" style="padding:6px 12px;text-align:right;color:#444;">${escapeHtml(params.promoCode?.trim() || 'Promo')} discount</td>
+          <td style="padding:6px 12px;text-align:right;color:#E32828;">−${escapeHtml(formatMoney(params.promoDiscountCents, currency))}</td>
+        </tr>`
+      : ''
 
   const discountRow =
     params.discountCents > 0
@@ -140,6 +154,7 @@ export function buildOrderPaidAdminEmailHtml(params: OrderPaidAdminEmailParams):
             <td colspan="3" style="padding:6px 12px;text-align:right;color:#444;">Shipping</td>
             <td style="padding:6px 12px;text-align:right;">${escapeHtml(formatMoney(params.shippingCents, currency))}</td>
           </tr>
+          ${promoRow}
           ${discountRow}
           <tr>
             <td colspan="3" style="padding:10px 12px;text-align:right;font-weight:700;font-size:16px;">Total</td>

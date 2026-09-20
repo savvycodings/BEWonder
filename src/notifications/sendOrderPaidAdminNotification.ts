@@ -69,6 +69,8 @@ type OrderRow = {
   shipping_cents: number
   discount_cents: number
   wonder_coins_redeemed: number
+  promo_code: string | null
+  promo_discount_cents: number
   total_cents: number
   shipping_snapshot_name: string | null
   shipping_snapshot_line1: string | null
@@ -99,6 +101,8 @@ async function loadOrderForAdminEmail(orderId: string): Promise<{
         o.shipping_cents,
         COALESCE(o.discount_cents, 0)::int AS discount_cents,
         COALESCE(o.wonder_coins_redeemed, 0)::int AS wonder_coins_redeemed,
+        o.promo_code,
+        COALESCE(o.promo_discount_cents, 0)::int AS promo_discount_cents,
         o.total_cents,
         o.shipping_snapshot_name,
         o.shipping_snapshot_line1,
@@ -167,6 +171,8 @@ function toEmailParams(order: OrderRow, lineItems: OrderLineItemEmailRow[]): Ord
     shippingCents: order.shipping_cents,
     discountCents: order.discount_cents,
     wonderCoinsRedeemed: order.wonder_coins_redeemed,
+    promoCode: order.promo_code,
+    promoDiscountCents: order.promo_discount_cents,
     totalCents: order.total_cents,
     deliverySummary: buildDeliverySummary(order),
     paidAt: formatPaidAt(order.updated_at),

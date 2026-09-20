@@ -9,6 +9,7 @@ import {
   shippingCentsForOrder,
   type PudoLockerTier,
 } from './pudoLockerPricing'
+import { resolveCheckoutPromo } from './checkoutPromo'
 import { quoteOrderWonderCoins } from './wonderCoins'
 
 export type LineInput = { productId: string; quantity: number; packaging?: 'single' | 'set' }
@@ -175,6 +176,9 @@ export type OrderQuoteResult = {
   maxRedeemableCoins: number
   walletBalance: number
   currency: string
+  promoCode: string | null
+  promoDiscountCents: number
+  promoError: string | null
 }
 
 export type QuoteOrderCartResult =
@@ -186,6 +190,7 @@ export async function quoteOrderCart(params: {
   items: LineInput[]
   pudoLockerTier: string
   wonderCoinsToRedeem: number
+  promoCode?: string | null
 }): Promise<QuoteOrderCartResult> {
   const built = await buildOrderLinesFromItems(params.items)
   if (!built.ok) {
@@ -214,6 +219,13 @@ export async function quoteOrderCart(params: {
   }
 
   const shippingCents = shippingCentsForOrder(subtotalCents, currency, pudoLockerTier)
+  const promo = await resolveCheckoutPromo({
+    userId: params.userId,
+    rawPromoCode: params.promoCode,
+    subtotalCents,
+  })
+  const merchandiseAfterPromo = Math.max(0, subtotalCents - promo.promoDiscountCents)
+
   const walletBalance = params.userId
     ? await getUserWonderCoinsBalance(params.userId)
     : 0
@@ -221,7 +233,7 @@ export async function quoteOrderCart(params: {
     ? Math.max(0, Math.floor(params.wonderCoinsToRedeem))
     : 0
   const coinQuote = quoteOrderWonderCoins({
-    subtotalCents,
+    subtotalCents: merchandiseAfterPromo,
     shippingCents,
     balance: walletBalance,
     wonderCoinsToRedeem: coinsToRedeem,
@@ -241,6 +253,9 @@ export async function quoteOrderCart(params: {
       maxRedeemableCoins: coinQuote.maxRedeemableCoins,
       walletBalance: coerceWonderWalletInt(walletBalance),
       currency,
+      promoCode: promo.promoCode,
+      promoDiscountCents: promo.promoDiscountCents,
+      promoError: promo.promoError,
     },
   }
 }

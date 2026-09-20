@@ -21,6 +21,7 @@ import {
   isCustomerVisibleOrder,
 } from './customerOrderVisibility'
 import { quoteOrderCart, type LineInput } from './orderCartPricing'
+import { normalizeCheckoutPromoCode } from './checkoutPromo'
 
 const router = express.Router()
 
@@ -159,12 +160,14 @@ router.post('/quote', async (req, res) => {
     const wonderCoinsToRedeem = auth
       ? Math.max(0, Math.floor(Number(req.body?.wonderCoinsToRedeem) || 0))
       : 0
+    const promoCode = String(req.body?.promoCode || '').trim() || null
 
     const result = await quoteOrderCart({
       userId: auth?.userId ?? null,
       items: items || [],
       pudoLockerTier,
       wonderCoinsToRedeem,
+      promoCode,
     })
 
     if (!result.ok) {
@@ -189,6 +192,8 @@ router.post('/', async (req, res) => {
 
   const items = req.body?.items as LineInput[] | undefined
   const wonderCoinsToRedeem = Math.max(0, Math.floor(Number(req.body?.wonderCoinsToRedeem) || 0))
+  const promoCodeRaw = String(req.body?.promoCode || '').trim() || null
+  const promoRequested = Boolean(normalizeCheckoutPromoCode(promoCodeRaw))
 
   const pudoLockerTierRaw = String(req.body?.pudoLockerTier || '').trim().toLowerCase()
   if (!isValidPudoLockerTier(pudoLockerTierRaw)) {
@@ -203,16 +208,25 @@ router.post('/', async (req, res) => {
     items: items || [],
     pudoLockerTier,
     wonderCoinsToRedeem,
+    promoCode: promoCodeRaw,
   })
   if (!quoted.ok) {
     return res.status(quoted.status).json({ error: quoted.error, detail: quoted.detail })
   }
 
   const { lines, quote } = quoted
+  if (promoRequested && (!quote.promoCode || quote.promoDiscountCents <= 0)) {
+    return res.status(400).json({
+      error: quote.promoError || 'Promo code could not be applied.',
+    })
+  }
+
   const subtotal = quote.subtotalCents
   const shippingCents = quote.shippingCents
   const discountCents = quote.discountCents
   const wonderCoinsRedeemed = quote.wonderCoinsRedeemed
+  const promoCode = quote.promoCode
+  const promoDiscountCents = quote.promoDiscountCents
   const total = quote.totalCents
   const currency = quote.currency
 
@@ -276,6 +290,7 @@ router.post('/', async (req, res) => {
       INSERT INTO orders (
         user_id, reference_code, status, payment_method, currency_code,
         subtotal_cents, discount_cents, wonder_coins_redeemed, shipping_cents, total_cents,
+        promo_code, promo_discount_cents,
         shipping_snapshot_name, shipping_snapshot_line1, shipping_snapshot_line2,
         delivery_method, contact_phone, contact_email,
         pudo_locker_name, pudo_locker_address, pudo_locker_tier,
@@ -285,10 +300,11 @@ router.post('/', async (req, res) => {
       VALUES (
         $1, $2, $3, $4, $5,
         $6, $7, $8, $9, $10,
-        $11, $12, $13,
-        $14, $15, $16,
-        $17, $18, $19,
-        $20, $21, $22,
+        $11, $12,
+        $13, $14, $15,
+        $16, $17, $18,
+        $19, $20, $21,
+        $22, $23, $24,
         NOW()
       )
       RETURNING id
@@ -304,6 +320,8 @@ router.post('/', async (req, res) => {
       wonderCoinsRedeemed,
       shippingCents,
       total,
+      promoCode,
+      promoDiscountCents,
       shipName,
       ship1,
       ship2,
@@ -359,6 +377,8 @@ router.post('/', async (req, res) => {
         subtotalCents: subtotal,
         discountCents,
         wonderCoinsRedeemed,
+        promoCode,
+        promoDiscountCents,
         deliveryMethod,
         shippingCents,
         contactEmail,
@@ -373,6 +393,8 @@ router.post('/', async (req, res) => {
     discountCents,
     wonderCoinsRedeemed,
     wonderCoinsEarned: quote.wonderCoinsEarned,
+    promoCode,
+    promoDiscountCents,
     shippingCents,
     totalCents: total,
     currencyCode: currency,

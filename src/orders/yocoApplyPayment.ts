@@ -24,6 +24,7 @@ async function loadOrderForWonderCoinsSettlement(
         currency_code,
         subtotal_cents,
         COALESCE(discount_cents, 0)::int AS discount_cents,
+        COALESCE(promo_discount_cents, 0)::int AS promo_discount_cents,
         COALESCE(wonder_coins_redeemed, 0)::int AS wonder_coins_redeemed,
         COALESCE(wonder_coins_redeem_settled, FALSE) AS wonder_coins_redeem_settled,
         spend_loyalty_coins_awarded
