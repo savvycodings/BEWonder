@@ -187,6 +187,9 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS wonder_coins_redeem_settled BOOLEAN 
 -- Checkout promo (e.g. WONDER15 first-order %). Separate from WonderCoins discount_cents.
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS promo_code TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS promo_discount_cents INTEGER NOT NULL DEFAULT 0;
+
+-- Index to make global WONDER15 / influencer promo lookups fast
+CREATE INDEX IF NOT EXISTS idx_orders_promo_code ON orders (promo_code) WHERE promo_code IS NOT NULL;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS yoco_checkout_id TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS yoco_payment_id TEXT;
 ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_payment_method_chk;
