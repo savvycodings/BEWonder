@@ -16,6 +16,7 @@
     "db:reset-wallet": "npx tsc && node dist/db/resetAllWonderWallet.js --confirm-all",
     "db:migrate:community": "npx tsc && node dist/db/migrateCommunityMessages.js",
     "shopify:sync": "npx tsc && node dist/db/syncShopifyCatalog.js",
+    "yoco:fingerprint": "node scripts/yoco-key-fingerprint.mjs",
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:pudo": "npx tsc && node scripts/test-pudo-flow.mjs"
   },

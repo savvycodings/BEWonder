@@ -183,7 +183,9 @@ router.post('/quote', async (req, res) => {
 
 router.post('/', async (req, res) => {
   const auth = await getAuthUserFromRequest(req)
-  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  if (!auth) {
+    return res.status(401).json({ error: 'Session expired. Please sign in again.' })
+  }
 
   const paymentMethod = String(req.body?.paymentMethod || '').toLowerCase()
   if (paymentMethod !== 'yoco' && paymentMethod !== 'eft') {
@@ -687,7 +689,9 @@ router.post('/:orderId/eft-proof', async (req, res) => {
 
 router.post('/:orderId/yoco/init', async (req, res) => {
   const auth = await getAuthUserFromRequest(req)
-  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  if (!auth) {
+    return res.status(401).json({ error: 'Session expired. Please sign in again.' })
+  }
   const orderId = String(req.params.orderId || '').trim()
   yocoLog('POST /orders/:orderId/yoco/init', {
     orderId,
@@ -739,8 +743,13 @@ router.post('/:orderId/yoco/init', async (req, res) => {
       yocoBody: checkout.yocoBody,
     })
     const status = checkout.status && checkout.status >= 400 && checkout.status < 500 ? checkout.status : 503
+    // Avoid raw Yoco "Unauthorized" looking like a session failure in the app.
+    const error =
+      checkout.status === 401
+        ? 'Card payments are misconfigured (Yoco key). Please try again later or use EFT.'
+        : checkout.error
     return res.status(status).json({
-      error: checkout.error,
+      error,
       yocoStatus: checkout.status,
     })
   }

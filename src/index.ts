@@ -12,6 +12,7 @@ import ordersRouter from './orders/ordersRouter'
 import adminOrdersRouter from './admin/adminOrdersRouter'
 import { handleYocoWebhook } from './orders/yocoWebhookHandler'
 import { handleTcgWebhook } from './orders/tcgWebhookHandler'
+import { yocoKeyFingerprint, yocoKeyMode } from './orders/yocoLog'
 import bodyParser from 'body-parser'
 import cors from 'cors'
 
@@ -66,6 +67,19 @@ if (publicDir) {
 
 app.get('/', (req, res) => {
   res.send('Hello World!')
+})
+
+/** Safe payment-config probe (no secrets). Compare fingerprint with website / local .env. */
+app.get('/health/payments', (_req, res) => {
+  const secret = process.env.YOCO_SECRET_KEY?.trim() || ''
+  res.status(200).json({
+    yocoConfigured: Boolean(secret),
+    keyMode: secret ? yocoKeyMode(secret) : null,
+    keyFingerprint: secret ? yocoKeyFingerprint(secret) : null,
+    returnBaseConfigured: Boolean(
+      (process.env.YOCO_RETURN_BASE_URL || process.env.PUBLIC_API_BASE_URL || '').trim(),
+    ),
+  })
 })
 
 app.use('/chat', chatRouter)
