@@ -1,9 +1,9 @@
 import { pool } from '../db/client'
 
 /**
- * After an order becomes paid, remove the purchased lines from the account cart.
- * The live app UI is local + syncs via PUT /auth/cart; we also suppress those
- * lines on PUT for a short window so the client cannot immediately restore them.
+ * After an order becomes paid, remove ONLY the purchased lines from the account cart.
+ * Never wipes the whole cart. Other items stay. The app may still show local cart until
+ * reopen; PUT /auth/cart is filtered so purchased lines are not restored.
  */
 const SUPPRESS_HOURS = 6
 
@@ -40,13 +40,16 @@ export async function clearCartItemsForPaidOrder(orderId: string): Promise<void>
     )
 
     if (!lines.rows.length) {
-      // No product ids on lines — clear whole cart (safe for typical single-checkout carts).
-      await client.query(`DELETE FROM user_cart_items WHERE user_id = $1::uuid`, [userId])
-      console.log('[cart] cleared full cart after paid order (no line product ids)', { orderId, userId })
+      // Do not clear the whole cart — without product ids we cannot safely match lines.
+      console.warn('[cart] skip cart clear — paid order has no product_id line items', {
+        orderId,
+        userId,
+      })
       return
     }
 
     await client.query('BEGIN')
+    let touched = 0
     for (const line of lines.rows) {
       const productId = Number(line.product_id)
       if (!Number.isFinite(productId) || productId <= 0) continue
@@ -54,7 +57,7 @@ export async function clearCartItemsForPaidOrder(orderId: string): Promise<void>
         String(line.packaging || 'single').trim().toLowerCase() === 'set' ? 'set' : 'single'
       const qty = Math.max(1, Math.floor(Number(line.quantity) || 1))
 
-      await client.query(
+      const upd = await client.query(
         `
           UPDATE user_cart_items
           SET
@@ -66,6 +69,7 @@ export async function clearCartItemsForPaidOrder(orderId: string): Promise<void>
         `,
         [userId, productId, packaging, qty],
       )
+      touched += upd.rowCount || 0
     }
     await client.query(
       `
@@ -76,10 +80,11 @@ export async function clearCartItemsForPaidOrder(orderId: string): Promise<void>
       [userId],
     )
     await client.query('COMMIT')
-    console.log('[cart] removed purchased lines from account cart', {
+    console.log('[cart] removed purchased lines only from account cart', {
       orderId,
       userId,
       lineCount: lines.rows.length,
+      cartRowsUpdated: touched,
     })
   } catch (error) {
     try {
