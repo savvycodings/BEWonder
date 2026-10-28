@@ -3,6 +3,7 @@ import { pool, runQuery } from '../db/client'
 import { getAuthUserFromRequest } from './session'
 import { classifyPurchaseMode } from '../products/purchaseMode'
 import { stockFieldsFromRow } from '../products/inventory'
+import { filterCartLinesAgainstRecentPaidOrders } from '../orders/clearCartForPaidOrder'
 
 type Money = { amount: string; currencyCode: string }
 type CartPackaging = 'single' | 'set'
@@ -229,8 +230,10 @@ export function registerUserCartRoutes(router: Router) {
       return res.status(400).json({ error: 'Invalid cart items payload' })
     }
     try {
-      if (lines.length > 0) {
-        const ids = [...new Set(lines.map((l) => l.productId))]
+      // Drop lines just purchased so the app cannot re-fill the account cart after paid.
+      const filtered = await filterCartLinesAgainstRecentPaidOrders(auth.userId, lines)
+      if (filtered.length > 0) {
+        const ids = [...new Set(filtered.map((l) => l.productId))]
         const exists = await runQuery<{ id: number }>(
           `
             SELECT id FROM products
@@ -242,7 +245,7 @@ export function registerUserCartRoutes(router: Router) {
           return res.status(404).json({ error: 'One or more products were not found' })
         }
       }
-      await replaceUserCart(auth.userId, lines)
+      await replaceUserCart(auth.userId, filtered)
       const items = await listCartItemsForUser(auth.userId)
       return res.status(200).json({ items })
     } catch (error: any) {

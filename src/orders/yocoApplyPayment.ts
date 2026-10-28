@@ -1,5 +1,7 @@
 import type { PoolClient } from 'pg'
 import { sendOrderPaidAdminNotification } from '../notifications/sendOrderPaidAdminNotification'
+import { sendOrderPaidCustomerNotification } from '../notifications/sendOrderPaidCustomerNotification'
+import { clearCartItemsForPaidOrder } from './clearCartForPaidOrder'
 import { settleWonderCoinsForPaidOrder } from './orderSpendLoyalty'
 import { createTcgShipmentForPaidOrderIfNeeded } from './tcgFulfillment'
 
@@ -95,6 +97,12 @@ export async function runYocoPaymentSideEffects(orderId: string, becamePaid: boo
     )
     void sendOrderPaidAdminNotification(orderId).catch((err) =>
       console.error('[order-paid-admin-email] notification failed', err)
+    )
+    void sendOrderPaidCustomerNotification(orderId).catch((err) =>
+      console.error('[order-paid-customer-email] notification failed', err)
+    )
+    void clearCartItemsForPaidOrder(orderId).catch((err) =>
+      console.error('[cart] clear after paid failed', orderId, err)
     )
   }
 }

@@ -205,6 +205,8 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS tcg_last_error TEXT;
 
 -- Admin purchase notification email (Resend) — set once when order becomes paid.
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS admin_purchase_notify_sent_at TIMESTAMPTZ;
+-- Buyer receipt email (Resend) — set once when order becomes paid.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_purchase_notify_sent_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_orders_tcg_shipment_id ON orders (tcg_shipment_id) WHERE tcg_shipment_id IS NOT NULL;
 

@@ -9,6 +9,8 @@ import { pudoLockerTierLabel } from '../orders/pudoLockerPricing'
 import { syncShopifyCatalogToDb } from '../shopify/syncCatalog'
 import { getNotificationOutboxSummary, processOutbox } from '../notifications/processOutbox'
 import { sendOrderPaidAdminNotification } from '../notifications/sendOrderPaidAdminNotification'
+import { sendOrderPaidCustomerNotification } from '../notifications/sendOrderPaidCustomerNotification'
+import { clearCartItemsForPaidOrder } from '../orders/clearCartForPaidOrder'
 
 const router = express.Router()
 
@@ -584,6 +586,12 @@ router.post('/orders/:orderId/accept-eft', requireAdmin, async (req, res) => {
     )
     void sendOrderPaidAdminNotification(orderId).catch((err) =>
       console.error('[order-paid-admin-email] EFT accept notification failed', orderId, err)
+    )
+    void sendOrderPaidCustomerNotification(orderId).catch((err) =>
+      console.error('[order-paid-customer-email] EFT accept notification failed', orderId, err)
+    )
+    void clearCartItemsForPaidOrder(orderId).catch((err) =>
+      console.error('[cart] EFT accept: clear cart failed', orderId, err)
     )
 
     return res.status(200).json({
