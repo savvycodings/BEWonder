@@ -31,19 +31,24 @@ function buildDeliverySummary(order: {
   shipping_snapshot_line1: string | null
   shipping_snapshot_line2: string | null
 }): string {
+  const tierKey = String(order.pudo_locker_tier || '').trim().toLowerCase()
+  const line1 = String(order.shipping_snapshot_line1 || '').trim()
+  const line2 = String(order.shipping_snapshot_line2 || '').trim()
+  if (tierKey === 'collect') {
+    const parts = [pudoLockerTierLabel('collect'), line1, line2].filter(Boolean)
+    return parts.join(' · ') || 'Collect (free)'
+  }
   const lockerName = String(order.pudo_locker_name || '').trim()
   const lockerAddr = String(order.pudo_locker_address || '').trim()
   if (lockerName || lockerAddr) {
     const tier = pudoLockerTierLabel(order.pudo_locker_tier)
-    const parts = [tier !== '—' ? tier : null, lockerName, lockerAddr].filter(Boolean)
+    const parts = [tier !== '-' ? tier : null, lockerName, lockerAddr].filter(Boolean)
     return parts.join(' · ') || 'Pudo locker'
   }
-  const line1 = String(order.shipping_snapshot_line1 || '').trim()
-  const line2 = String(order.shipping_snapshot_line2 || '').trim()
   if (line1 || line2) {
     return [line1, line2].filter(Boolean).join(', ')
   }
-  return '—'
+  return '-'
 }
 
 function formatPaidAt(iso: string | null | undefined): string {

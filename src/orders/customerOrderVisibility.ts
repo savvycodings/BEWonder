@@ -2,15 +2,33 @@
  * Orders visible in Profile → My orders (customer completed checkout).
  * - Card: paid (or refunded after purchase)
  * - EFT: proof uploaded (user finished the in-app flow)
+ * - Paid Collect still awaiting pickup lives in "In-store collection", not My orders
+ *
+ * Use COALESCE on pudo_locker_tier so older paid orders with a null tier stay visible.
  */
 export function customerOrderHistoryWhereSql(alias = 'o'): string {
   return `(
-    ${alias}.status IN ('paid', 'refunded')
-    OR (
-      ${alias}.payment_method = 'eft'
-      AND ${alias}.eft_proof_image_url IS NOT NULL
-      AND TRIM(${alias}.eft_proof_image_url) <> ''
+    (
+      ${alias}.status IN ('paid', 'refunded')
+      OR (
+        ${alias}.payment_method = 'eft'
+        AND ${alias}.eft_proof_image_url IS NOT NULL
+        AND TRIM(${alias}.eft_proof_image_url) <> ''
+      )
     )
+    AND NOT (
+      COALESCE(${alias}.pudo_locker_tier, '') = 'collect'
+      AND COALESCE(NULLIF(TRIM(${alias}.collect_status), ''), 'awaiting_collection') = 'awaiting_collection'
+    )
+  )`
+}
+
+/** Paid Collect orders waiting for in-store handover (buyer profile section). */
+export function customerAwaitingCollectionWhereSql(alias = 'o'): string {
+  return `(
+    ${alias}.status = 'paid'
+    AND COALESCE(${alias}.pudo_locker_tier, '') = 'collect'
+    AND COALESCE(NULLIF(TRIM(${alias}.collect_status), ''), 'awaiting_collection') = 'awaiting_collection'
   )`
 }
 

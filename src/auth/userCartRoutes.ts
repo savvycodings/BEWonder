@@ -163,16 +163,18 @@ async function listCartItemsForUser(userId: string) {
 type CartSyncLine = { productId: number; packaging: CartPackaging; quantity: number }
 
 function parseCartSyncBody(raw: unknown): CartSyncLine[] | null {
-  if (!Array.isArray(raw)) return []
+  // Non-array must not become [] — that would DELETE the whole account cart.
+  if (!Array.isArray(raw)) return null
   const lines: CartSyncLine[] = []
   for (const entry of raw) {
     const productId = coerceProductId((entry as any)?.productId)
     const packaging = normalizePackaging((entry as any)?.packaging)
     const quantity = Number.parseInt(String((entry as any)?.quantity ?? ''), 10)
     if (!productId || !packaging || !Number.isFinite(quantity) || quantity < 1) {
-      return null
+      // Skip bad lines; do not reject the whole cart (that left the server stuck on a stale subset).
+      continue
     }
-    lines.push({ productId, packaging, quantity })
+    lines.push({ productId, packaging, quantity: Math.min(99, quantity) })
   }
   return lines
 }

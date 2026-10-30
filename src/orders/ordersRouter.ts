@@ -12,11 +12,13 @@ import {
   shippingCentsForOrder,
   type PudoLockerTier,
 } from './pudoLockerPricing'
+import { findCollectStore, formatCollectStoreLabel } from './collectStores'
 import { createYocoCheckout } from './yocoClient'
 import { yocoLog, yocoLogError } from './yocoLog'
 import { syncYocoOrderPayment } from './yocoSyncRoute'
 import {
   canCustomerAbandonOrder,
+  customerAwaitingCollectionWhereSql,
   customerOrderHistoryWhereSql,
   isCustomerVisibleOrder,
 } from './customerOrderVisibility'
@@ -200,7 +202,7 @@ router.post('/', async (req, res) => {
   const pudoLockerTierRaw = String(req.body?.pudoLockerTier || '').trim().toLowerCase()
   if (!isValidPudoLockerTier(pudoLockerTierRaw)) {
     return res.status(400).json({
-      error: 'pudoLockerTier is required (locker or door)',
+      error: 'pudoLockerTier is required (locker, door, or collect)',
     })
   }
   const pudoLockerTier = pudoLockerTierRaw as PudoLockerTier
@@ -250,8 +252,27 @@ router.post('/', async (req, res) => {
   let shipName = auth.user.fullName || ''
   let ship1 = ''
   let ship2 = ''
+  let collectStoreKey: string | null = null
+  let collectStoreName: string | null = null
+  let collectorName: string | null = null
 
-  if (pudoLockerTier === 'door') {
+  if (pudoLockerTier === 'collect') {
+    const store = findCollectStore(String(req.body?.collectStoreKey || ''))
+    const collector = String(req.body?.collectorName || '').trim()
+    if (!store) {
+      return res.status(400).json({ error: 'Select a store for in-store collection.' })
+    }
+    if (!collector || collector.length < 2) {
+      return res.status(400).json({ error: 'Enter the collector name.' })
+    }
+    collectStoreKey = store.key
+    collectStoreName = formatCollectStoreLabel(store)
+    collectorName = collector
+    pudoLockerName = ''
+    pudoLockerAddress = ''
+    ship1 = store.name
+    ship2 = `${store.address}. Collector: ${collector}`
+  } else if (pudoLockerTier === 'door') {
     const doorErr = validateDoorShippingBody(req.body || {})
     if (doorErr) {
       return res.status(400).json({ error: doorErr })
@@ -272,7 +293,7 @@ router.post('/', async (req, res) => {
 
   if (orderHasWholeSetLine(lines) && !pudoLockerTierForSetOnly(pudoLockerTier)) {
     return res.status(400).json({
-      error: 'Whole set orders require door delivery (R110).',
+      error: 'Whole set orders require door delivery or in-store collect.',
     })
   }
 
@@ -280,7 +301,7 @@ router.post('/', async (req, res) => {
   const customerEftBankName = String(req.body?.customerEftBankName || '').trim()
   const customerEftAccountNumber = String(req.body?.customerEftAccountNumber || '').trim()
 
-  const deliveryMethod = 'pudo'
+  const deliveryMethod = pudoLockerTier === 'collect' ? 'collect' : 'pudo'
   const initialStatus = paymentMethod === 'eft' ? 'awaiting_proof' : 'pending_payment'
 
   const referenceCode = await generateUniqueReferenceCode()
@@ -296,6 +317,7 @@ router.post('/', async (req, res) => {
         shipping_snapshot_name, shipping_snapshot_line1, shipping_snapshot_line2,
         delivery_method, contact_phone, contact_email,
         pudo_locker_name, pudo_locker_address, pudo_locker_tier,
+        collect_store_key, collect_store_name, collector_name,
         customer_eft_account_name, customer_eft_bank_name, customer_eft_account_number,
         updated_at
       )
@@ -307,6 +329,7 @@ router.post('/', async (req, res) => {
         $16, $17, $18,
         $19, $20, $21,
         $22, $23, $24,
+        $25, $26, $27,
         NOW()
       )
       RETURNING id
@@ -333,6 +356,9 @@ router.post('/', async (req, res) => {
       orderPudoName,
       orderPudoAddr,
       pudoLockerTier,
+      collectStoreKey,
+      collectStoreName,
+      collectorName,
       customerEftAccountName || null,
       customerEftBankName || null,
       customerEftAccountNumber || null,
@@ -402,6 +428,10 @@ router.post('/', async (req, res) => {
     currencyCode: currency,
     paymentMethod,
     status: initialStatus,
+    pudoLockerTier,
+    collectStoreKey,
+    collectStoreName,
+    collectorName,
   })
 })
 
@@ -418,6 +448,7 @@ router.get('/mine', async (req, res) => {
     total_cents: number
     created_at: string
     preview_image_url: string | null
+    item_titles: string[] | null
   }>(
     `
       SELECT
@@ -436,7 +467,12 @@ router.get('/mine', async (req, res) => {
             AND TRIM(oli.image_url) <> ''
           ORDER BY oli.created_at ASC
           LIMIT 1
-        ) AS preview_image_url
+        ) AS preview_image_url,
+        (
+          SELECT COALESCE(array_agg(oli.title ORDER BY oli.created_at ASC), ARRAY[]::text[])
+          FROM order_line_items oli
+          WHERE oli.order_id = o.id
+        ) AS item_titles
       FROM orders o
       WHERE o.user_id = $1
         AND ${customerOrderHistoryWhereSql('o')}
@@ -456,8 +492,77 @@ router.get('/mine', async (req, res) => {
       totalCents: r.total_cents,
       createdAt: r.created_at,
       previewImageUrl: r.preview_image_url,
+      itemTitles: Array.isArray(r.item_titles) ? r.item_titles.filter(Boolean) : [],
     })),
   })
+})
+
+/** Paid Collect pickups still awaiting store handover (buyer profile). */
+router.get('/mine/awaiting-collection', async (req, res) => {
+  const auth = await getAuthUserFromRequest(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+
+  try {
+    const result = await runQuery<{
+      id: string
+      reference_code: string
+      collect_store_name: string | null
+      collector_name: string | null
+      currency_code: string
+      total_cents: number
+      created_at: string
+      preview_image_url: string | null
+      item_titles: string[] | null
+    }>(
+      `
+        SELECT
+          o.id,
+          o.reference_code,
+          o.collect_store_name,
+          o.collector_name,
+          o.currency_code,
+          o.total_cents,
+          o.created_at,
+          (
+            SELECT oli.image_url
+            FROM order_line_items oli
+            WHERE oli.order_id = o.id
+              AND oli.image_url IS NOT NULL
+              AND TRIM(oli.image_url) <> ''
+            ORDER BY oli.created_at ASC
+            LIMIT 1
+          ) AS preview_image_url,
+          (
+            SELECT COALESCE(array_agg(oli.title ORDER BY oli.created_at ASC), ARRAY[]::text[])
+            FROM order_line_items oli
+            WHERE oli.order_id = o.id
+          ) AS item_titles
+        FROM orders o
+        WHERE o.user_id = $1
+          AND ${customerAwaitingCollectionWhereSql('o')}
+        ORDER BY o.updated_at DESC
+        LIMIT 50
+      `,
+      [auth.userId],
+    )
+
+    return res.status(200).json({
+      orders: result.rows.map((r) => ({
+        id: r.id,
+        referenceCode: r.reference_code,
+        collectStoreName: r.collect_store_name,
+        collectorName: r.collector_name,
+        currencyCode: r.currency_code,
+        totalCents: r.total_cents,
+        createdAt: r.created_at,
+        previewImageUrl: r.preview_image_url,
+        itemTitles: Array.isArray(r.item_titles) ? r.item_titles.filter(Boolean) : [],
+      })),
+    })
+  } catch (e: any) {
+    console.error('[orders/mine/awaiting-collection]', e)
+    return res.status(500).json({ error: 'Unable to load awaiting collections' })
+  }
 })
 
 router.get('/:orderId', async (req, res) => {

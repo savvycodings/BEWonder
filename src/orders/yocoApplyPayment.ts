@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg'
 import { sendOrderPaidAdminNotification } from '../notifications/sendOrderPaidAdminNotification'
 import { sendOrderPaidCustomerNotification } from '../notifications/sendOrderPaidCustomerNotification'
 import { clearCartItemsForPaidOrder } from './clearCartForPaidOrder'
+import { markCollectAwaitingForPaidOrder } from './markCollectAwaiting'
 import { settleWonderCoinsForPaidOrder } from './orderSpendLoyalty'
 import { createTcgShipmentForPaidOrderIfNeeded } from './tcgFulfillment'
 
@@ -85,6 +86,7 @@ export async function applyYocoPaymentToOrder(
     if (coinOrder) {
       await settleWonderCoinsForPaidOrder(client, coinOrder)
     }
+    await markCollectAwaitingForPaidOrder(order.id, client)
   }
 
   return { becamePaid, status: resolvedStatusAfter }

@@ -84,6 +84,14 @@ export async function createTcgShipmentForPaidOrderIfNeeded(orderId: string): Pr
       await client.query('ROLLBACK')
       return
     }
+    // In-store collect: no courier / ShipLogic shipment.
+    if (
+      String(order.pudo_locker_tier || '').trim().toLowerCase() === 'collect' ||
+      String(order.delivery_method || '').trim().toLowerCase() === 'collect'
+    ) {
+      await client.query('ROLLBACK')
+      return
+    }
 
     const lres = await client.query<OrderLineRow>(
       `

@@ -208,6 +208,19 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS admin_purchase_notify_sent_at TIMEST
 -- Buyer receipt email (Resend) — set once when order becomes paid.
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_purchase_notify_sent_at TIMESTAMPTZ;
 
+-- In-store Collect (pickup) — store + collector; status set when paid.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS collect_store_key TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS collect_store_name TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS collector_name TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS collect_status TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS collected_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_orders_collect_status
+  ON orders (collect_status)
+  WHERE collect_status IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_orders_collect_store_key
+  ON orders (collect_store_key)
+  WHERE collect_store_key IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_orders_tcg_shipment_id ON orders (tcg_shipment_id) WHERE tcg_shipment_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS order_line_items (

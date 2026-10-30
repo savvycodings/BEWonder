@@ -200,12 +200,20 @@ export async function quoteOrderCart(params: {
   const { lines, currency } = built
   const tierRaw = String(params.pudoLockerTier || '').trim().toLowerCase()
   if (!isValidPudoLockerTier(tierRaw)) {
-    return { ok: false, status: 400, error: 'pudoLockerTier is required (locker or door)' }
+    return {
+      ok: false,
+      status: 400,
+      error: 'pudoLockerTier is required (locker, door, or collect)',
+    }
   }
   const pudoLockerTier = tierRaw as PudoLockerTier
 
-  if (orderHasWholeSetLine(lines) && pudoLockerTier !== 'door') {
-    return { ok: false, status: 400, error: 'Whole set orders require door delivery (R110).' }
+  if (orderHasWholeSetLine(lines) && pudoLockerTier === 'locker') {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Whole set orders require door delivery or in-store collect.',
+    }
   }
 
   const subtotalCents = lines.reduce((s, l) => s + l.lineTotal, 0)

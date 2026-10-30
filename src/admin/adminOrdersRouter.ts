@@ -11,6 +11,7 @@ import { getNotificationOutboxSummary, processOutbox } from '../notifications/pr
 import { sendOrderPaidAdminNotification } from '../notifications/sendOrderPaidAdminNotification'
 import { sendOrderPaidCustomerNotification } from '../notifications/sendOrderPaidCustomerNotification'
 import { clearCartItemsForPaidOrder } from '../orders/clearCartForPaidOrder'
+import { markCollectAwaitingForPaidOrder } from '../orders/markCollectAwaiting'
 
 const router = express.Router()
 
@@ -237,6 +238,204 @@ router.get('/users/:userId/orders', requireAdmin, async (req, res) => {
       createdAt: o.created_at,
     })),
   })
+})
+
+/** Paid in-store Collect orders — must be registered before /orders/:orderId. */
+router.get('/orders/collections', requireAdmin, async (req, res) => {
+  const q = String(req.query.q || '').trim()
+  const statusFilter = String(req.query.status || 'awaiting').trim().toLowerCase()
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50))
+  const offset = Math.max(0, Number(req.query.offset) || 0)
+
+  const params: unknown[] = [limit, offset]
+  const where: string[] = [`o.status = 'paid'`, `o.pudo_locker_tier = 'collect'`]
+
+  if (statusFilter === 'collected') {
+    where.push(`o.collect_status = 'collected'`)
+  } else if (statusFilter !== 'all') {
+    where.push(`(o.collect_status IS NULL OR o.collect_status = 'awaiting_collection')`)
+  }
+
+  if (q) {
+    params.push(`%${q}%`)
+    const i = params.length
+    where.push(
+      `(o.reference_code ILIKE $${i} OR COALESCE(o.collector_name, '') ILIKE $${i} OR COALESCE(o.collect_store_name, '') ILIKE $${i})`,
+    )
+  }
+
+  try {
+    const result = await runQuery<{
+      id: string
+      reference_code: string
+      collect_status: string | null
+      collect_store_key: string | null
+      collect_store_name: string | null
+      collector_name: string | null
+      total_cents: number
+      currency_code: string
+      contact_email: string | null
+      contact_phone: string | null
+      shipping_snapshot_name: string | null
+      updated_at: string
+      collected_at: string | null
+    }>(
+      `
+        SELECT
+          o.id, o.reference_code, o.collect_status,
+          o.collect_store_key, o.collect_store_name, o.collector_name,
+          o.total_cents, o.currency_code, o.contact_email, o.contact_phone,
+          o.shipping_snapshot_name, o.updated_at, o.collected_at
+        FROM orders o
+        WHERE ${where.join(' AND ')}
+        ORDER BY o.updated_at DESC
+        LIMIT $1 OFFSET $2
+      `,
+      params,
+    )
+
+    return res.status(200).json({
+      orders: result.rows.map((r) => ({
+        id: r.id,
+        referenceCode: r.reference_code,
+        collectStatus: r.collect_status || 'awaiting_collection',
+        collectStoreKey: r.collect_store_key,
+        collectStoreName: r.collect_store_name,
+        collectorName: r.collector_name,
+        totalCents: r.total_cents,
+        currencyCode: r.currency_code,
+        contactEmail: r.contact_email,
+        contactPhone: r.contact_phone,
+        customerName: r.shipping_snapshot_name,
+        updatedAt: r.updated_at,
+        collectedAt: r.collected_at,
+      })),
+    })
+  } catch (e: any) {
+    console.error('[admin/orders/collections]', e)
+    return res.status(500).json({ error: 'Unable to load collections' })
+  }
+})
+
+router.get('/orders/collections/:referenceCode', requireAdmin, async (req, res) => {
+  const referenceCode = String(req.params.referenceCode || '').trim()
+  if (!referenceCode) return res.status(400).json({ error: 'referenceCode required' })
+
+  try {
+    const orderRes = await runQuery<{
+      id: string
+      reference_code: string
+      status: string
+      collect_status: string | null
+      collect_store_key: string | null
+      collect_store_name: string | null
+      collector_name: string | null
+      total_cents: number
+      subtotal_cents: number
+      shipping_cents: number
+      currency_code: string
+      contact_email: string | null
+      contact_phone: string | null
+      shipping_snapshot_name: string | null
+      updated_at: string
+      collected_at: string | null
+      payment_method: string
+    }>(
+      `
+        SELECT
+          id, reference_code, status, collect_status,
+          collect_store_key, collect_store_name, collector_name,
+          total_cents, subtotal_cents, shipping_cents, currency_code,
+          contact_email, contact_phone, shipping_snapshot_name,
+          updated_at, collected_at, payment_method
+        FROM orders
+        WHERE reference_code = $1 AND pudo_locker_tier = 'collect'
+        LIMIT 1
+      `,
+      [referenceCode],
+    )
+    const order = orderRes.rows[0]
+    if (!order) return res.status(404).json({ error: 'Collect order not found' })
+
+    const lines = await runQuery<{
+      title: string
+      quantity: number
+      unit_price_cents: number
+      line_total_cents: number
+      packaging: string | null
+    }>(
+      `
+        SELECT title, quantity, unit_price_cents, line_total_cents, packaging
+        FROM order_line_items
+        WHERE order_id = $1::uuid
+        ORDER BY created_at ASC
+      `,
+      [order.id],
+    )
+
+    return res.status(200).json({
+      order: {
+        id: order.id,
+        referenceCode: order.reference_code,
+        status: order.status,
+        collectStatus: order.collect_status || 'awaiting_collection',
+        collectStoreKey: order.collect_store_key,
+        collectStoreName: order.collect_store_name,
+        collectorName: order.collector_name,
+        totalCents: order.total_cents,
+        subtotalCents: order.subtotal_cents,
+        shippingCents: order.shipping_cents,
+        currencyCode: order.currency_code,
+        contactEmail: order.contact_email,
+        contactPhone: order.contact_phone,
+        customerName: order.shipping_snapshot_name,
+        updatedAt: order.updated_at,
+        collectedAt: order.collected_at,
+        paymentMethod: order.payment_method,
+        lines: lines.rows.map((l) => ({
+          title: l.title,
+          quantity: l.quantity,
+          unitPriceCents: l.unit_price_cents,
+          lineTotalCents: l.line_total_cents,
+          packaging: l.packaging,
+        })),
+      },
+    })
+  } catch (e: any) {
+    console.error('[admin/orders/collections/:referenceCode]', e)
+    return res.status(500).json({ error: 'Unable to load collection order' })
+  }
+})
+
+router.post('/orders/collections/:referenceCode/mark-collected', requireAdmin, async (req, res) => {
+  const referenceCode = String(req.params.referenceCode || '').trim()
+  if (!referenceCode) return res.status(400).json({ error: 'referenceCode required' })
+
+  try {
+    const upd = await runQuery<{ id: string; reference_code: string }>(
+      `
+        UPDATE orders
+        SET collect_status = 'collected', collected_at = NOW(), updated_at = NOW()
+        WHERE reference_code = $1
+          AND status = 'paid'
+          AND pudo_locker_tier = 'collect'
+          AND (collect_status IS NULL OR collect_status = 'awaiting_collection')
+        RETURNING id, reference_code
+      `,
+      [referenceCode],
+    )
+    if (!upd.rows[0]) {
+      return res.status(409).json({ error: 'Order not found or already collected.' })
+    }
+    return res.status(200).json({
+      ok: true,
+      referenceCode: upd.rows[0].reference_code,
+      collectStatus: 'collected',
+    })
+  } catch (e: any) {
+    console.error('[admin/orders/collections/mark-collected]', e)
+    return res.status(500).json({ error: 'Unable to mark collected' })
+  }
 })
 
 router.get('/orders/:orderId', requireAdmin, async (req, res) => {
@@ -578,6 +777,7 @@ router.post('/orders/:orderId/accept-eft', requireAdmin, async (req, res) => {
       currencyCode: row.currency_code,
       totalCents: row.total_cents,
     })
+    await markCollectAwaitingForPaidOrder(orderId, client)
 
     await client.query('COMMIT')
 

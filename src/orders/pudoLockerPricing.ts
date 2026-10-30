@@ -1,12 +1,13 @@
 import { lockerTierToParcel, type TcgLockerTier } from '../products/shippingDimensions'
 
-export const PUDO_LOCKER_TIERS = ['locker', 'door'] as const
+export const PUDO_LOCKER_TIERS = ['locker', 'door', 'collect'] as const
 export type PudoLockerTier = (typeof PUDO_LOCKER_TIERS)[number]
 
-/** ZAR shipping cents by customer-selected delivery option. */
+/** ZAR shipping cents by customer-selected delivery option. Collect is always free. */
 export const PUDO_LOCKER_SHIPPING_CENTS_ZAR: Record<PudoLockerTier, number> = {
   locker: 9000,
   door: 11000,
+  collect: 0,
 }
 
 /** ZAR subtotal (cents) at or above which Pudo delivery is free. R1,000 = 100_000 cents. */
@@ -26,14 +27,15 @@ export function qualifiesForFreeDeliveryZar(
 export const PUDO_LOCKER_LABELS: Record<PudoLockerTier, string> = {
   locker: 'Locker',
   door: 'Door',
+  collect: 'Collect',
 }
 
-const TCG_TIER_FOR_CUSTOMER: Record<PudoLockerTier, TcgLockerTier> = {
+const TCG_TIER_FOR_CUSTOMER: Record<Exclude<PudoLockerTier, 'collect'>, TcgLockerTier> = {
   locker: 's',
   door: 'l',
 }
 
-/** @deprecated Legacy tiers — accepted for existing orders only. */
+/** @deprecated Legacy tiers; accepted for existing orders only. */
 const LEGACY_TIERS = ['xs', 's', 'm', 'l', 'xl'] as const
 
 const LEGACY_TIER_LABELS: Record<string, string> = {
@@ -62,7 +64,8 @@ export function isKnownPudoLockerTier(value: string): boolean {
 }
 
 export function pudoLockerTierForSetOnly(tier: string): boolean {
-  if (tier === 'door') return true
+  // Whole sets cannot use Pudo locker; door delivery or in-store collect are OK.
+  if (tier === 'door' || tier === 'collect') return true
   return tier === 'l' || tier === 'xl'
 }
 
@@ -82,17 +85,21 @@ export function shippingCentsForOrder(
   currency: string,
   tier: string,
 ): number {
+  const t = String(tier || '').trim().toLowerCase()
+  // In-store collect is always free (no R1000 threshold).
+  if (t === 'collect') return 0
   if (qualifiesForFreeDeliveryZar(subtotalCents, currency)) return 0
   return shippingCentsForPudoTier(tier)
 }
 
 export function pudoLockerTierLabel(tier: string | null | undefined): string {
   const t = String(tier || '').trim().toLowerCase()
+  if (t === 'collect') return 'Collect (free)'
   if (isValidPudoLockerTier(t)) {
     return `${PUDO_LOCKER_LABELS[t]} (R${PUDO_LOCKER_SHIPPING_CENTS_ZAR[t] / 100})`
   }
   if (LEGACY_TIER_LABELS[t]) return LEGACY_TIER_LABELS[t]
-  return t ? t.toUpperCase() : '—'
+  return t ? t.toUpperCase() : '-'
 }
 
 export function parcelDimensionsForCustomerTier(tier: string): {
@@ -103,11 +110,16 @@ export function parcelDimensionsForCustomerTier(tier: string): {
   lockerTier: string
 } {
   const t = String(tier || '').trim().toLowerCase()
-  const tcgTier: TcgLockerTier = isValidPudoLockerTier(t)
-    ? TCG_TIER_FOR_CUSTOMER[t]
-    : (LEGACY_TIERS as readonly string[]).includes(t as (typeof LEGACY_TIERS)[number])
-      ? (t as TcgLockerTier)
-      : 's'
+  if (t === 'collect') {
+    const fallback = lockerTierToParcel('s')!
+    return { ...fallback, weightKg: 2, lockerTier: 's' }
+  }
+  const tcgTier: TcgLockerTier =
+    t === 'locker' || t === 'door'
+      ? TCG_TIER_FOR_CUSTOMER[t]
+      : (LEGACY_TIERS as readonly string[]).includes(t as (typeof LEGACY_TIERS)[number])
+        ? (t as TcgLockerTier)
+        : 's'
 
   const dims = lockerTierToParcel(tcgTier)
   if (!dims) {
